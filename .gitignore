@@ -1,0 +1,10 @@
+node_modules/
+.next/
+__pycache__/
+*.pyc
+.env
+*.egg-info/
+dist/
+build/
+playwright_data/
+.playwright/
