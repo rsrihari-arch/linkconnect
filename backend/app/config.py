@@ -1,10 +1,11 @@
+import base64
+import hashlib
 from pydantic_settings import BaseSettings
-from cryptography.fernet import Fernet
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql+asyncpg://postgres:postgres@db:5432/linkedin_automation"
-    encryption_key: str = ""
+    database_url: str = "postgresql://postgres:postgres@db:5432/linkedin_automation"
+    encryption_key: str = "default-key-change-me"
     secret_key: str = "changeme"
     headless: bool = True
     daily_limit_max: int = 30
@@ -14,10 +15,22 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
 
-    def get_fernet(self) -> Fernet:
-        if not self.encryption_key:
-            self.encryption_key = Fernet.generate_key().decode()
-        return Fernet(self.encryption_key.encode() if isinstance(self.encryption_key, str) else self.encryption_key)
+    def encrypt(self, plaintext: str) -> str:
+        key = hashlib.sha256(self.encryption_key.encode()).digest()
+        encoded = base64.b64encode(plaintext.encode()).decode()
+        # Simple XOR obfuscation with key
+        result = []
+        for i, ch in enumerate(encoded):
+            result.append(chr(ord(ch) ^ key[i % len(key)]))
+        return base64.b64encode("".join(result).encode("latin-1")).decode()
+
+    def decrypt(self, ciphertext: str) -> str:
+        key = hashlib.sha256(self.encryption_key.encode()).digest()
+        decoded = base64.b64decode(ciphertext.encode()).decode("latin-1")
+        result = []
+        for i, ch in enumerate(decoded):
+            result.append(chr(ord(ch) ^ key[i % len(key)]))
+        return base64.b64decode("".join(result)).decode()
 
 
 settings = Settings()

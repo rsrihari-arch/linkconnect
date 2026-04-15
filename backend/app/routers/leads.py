@@ -1,7 +1,7 @@
 import csv
 import io
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.database import get_db
@@ -12,20 +12,19 @@ router = APIRouter()
 
 
 @router.post("/{campaign_id}/leads/upload")
-async def upload_leads(
+def upload_leads(
     campaign_id: int,
     file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
 ):
-    result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
-    campaign = result.scalar_one_or_none()
+    campaign = db.execute(select(Campaign).where(Campaign.id == campaign_id)).scalar_one_or_none()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files are accepted")
 
-    content = await file.read()
+    content = file.file.read()
     text = content.decode("utf-8")
     reader = csv.DictReader(io.StringIO(text))
 
@@ -41,10 +40,10 @@ async def upload_leads(
         if not url.startswith("http"):
             url = f"https://www.linkedin.com/in/{url}"
 
-        existing = await db.execute(
+        existing = db.execute(
             select(Lead).where(Lead.campaign_id == campaign_id, Lead.linkedin_url == url)
-        )
-        if existing.scalar_one_or_none():
+        ).scalar_one_or_none()
+        if existing:
             skipped += 1
             continue
 
@@ -58,29 +57,29 @@ async def upload_leads(
         db.add(lead)
         added += 1
 
-    await db.commit()
+    db.commit()
     return {"message": f"Uploaded {added} leads, skipped {skipped} duplicates"}
 
 
 @router.post("/{campaign_id}/leads")
-async def add_single_lead(
+def add_single_lead(
     campaign_id: int,
     linkedin_url: str,
     name: str = None,
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
 ):
-    result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
-    if not result.scalar_one_or_none():
+    campaign = db.execute(select(Campaign).where(Campaign.id == campaign_id)).scalar_one_or_none()
+    if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     url = linkedin_url.strip()
     if not url.startswith("http"):
         url = f"https://www.linkedin.com/in/{url}"
 
-    existing = await db.execute(
+    existing = db.execute(
         select(Lead).where(Lead.campaign_id == campaign_id, Lead.linkedin_url == url)
-    )
-    if existing.scalar_one_or_none():
+    ).scalar_one_or_none()
+    if existing:
         raise HTTPException(status_code=400, detail="Lead already exists in this campaign")
 
     lead = Lead(
@@ -90,36 +89,35 @@ async def add_single_lead(
         status=LeadStatus.pending,
     )
     db.add(lead)
-    await db.commit()
-    await db.refresh(lead)
+    db.commit()
+    db.refresh(lead)
     return LeadResponse.model_validate(lead)
 
 
 @router.get("/{campaign_id}/leads", response_model=list[LeadResponse])
-async def list_leads(
+def list_leads(
     campaign_id: int,
     status: LeadStatus = None,
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
 ):
     query = select(Lead).where(Lead.campaign_id == campaign_id)
     if status:
         query = query.where(Lead.status == status)
     query = query.order_by(Lead.created_at.desc()).offset(skip).limit(limit)
 
-    result = await db.execute(query)
+    result = db.execute(query)
     return result.scalars().all()
 
 
 @router.delete("/{campaign_id}/leads/{lead_id}")
-async def delete_lead(campaign_id: int, lead_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
+def delete_lead(campaign_id: int, lead_id: int, db: Session = Depends(get_db)):
+    lead = db.execute(
         select(Lead).where(Lead.id == lead_id, Lead.campaign_id == campaign_id)
-    )
-    lead = result.scalar_one_or_none()
+    ).scalar_one_or_none()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
-    await db.delete(lead)
-    await db.commit()
+    db.delete(lead)
+    db.commit()
     return {"message": "Lead deleted"}

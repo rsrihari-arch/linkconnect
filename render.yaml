@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: linkconnect-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: SECRET_KEY
+        generateValue: true
+      - key: HEADLESS
+        value: "true"
+    healthCheckPath: /api/health
+
+  - type: web
+    name: linkconnect-frontend
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    plan: free
+    buildFilter:
+      paths:
+        - frontend/**
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false

@@ -1,24 +1,11 @@
-from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import init_db
 from app.routers import accounts, campaigns, leads
-from app.services.campaign_runner import scheduler
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await init_db()
-    scheduler.start()
-    yield
-    scheduler.shutdown()
-
 
 app = FastAPI(
     title="LinkedIn Automation Platform",
     version="1.0.0",
-    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -35,5 +22,5 @@ app.include_router(leads.router, prefix="/api/campaigns", tags=["Leads"])
 
 
 @app.get("/api/health")
-async def health():
+def health():
     return {"status": "ok"}
