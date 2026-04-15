@@ -11,6 +11,11 @@ class AccountCreate(BaseModel):
     password: str
 
 
+class AccountCreateWithCookies(BaseModel):
+    email: str
+    cookies: str
+
+
 class AccountResponse(BaseModel):
     id: int
     email: str

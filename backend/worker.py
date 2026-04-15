@@ -86,7 +86,8 @@ async def login_account(email: str, password: str, headless: bool = True) -> Lis
     page = await context.new_page()
 
     try:
-        await page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
+        await page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_selector("#username", timeout=15000)
         await page.fill("#username", email)
         await asyncio.sleep(random.uniform(0.5, 1.5))
         await page.fill("#password", password)
@@ -101,10 +102,10 @@ async def login_account(email: str, password: str, headless: bool = True) -> Lis
             current_url = page.url
             if "challenge" in current_url or "checkpoint" in current_url:
                 print(f"[Login] Security challenge detected at {current_url}")
-                print("[Login] Please complete the challenge manually in the browser.")
                 if not headless:
-                    input("[Login] Press Enter after completing the challenge...")
-                    await page.wait_for_url("**/feed/**", timeout=60000)
+                    print("[Login] Please complete the challenge in the browser window...")
+                    print("[Login] Waiting up to 2 minutes for you to solve it...")
+                    await page.wait_for_url("**/feed/**", timeout=120000)
                 else:
                     print("[Login] Re-run with HEADLESS=false to handle the challenge.")
                     return []

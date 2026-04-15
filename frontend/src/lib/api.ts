@@ -57,6 +57,9 @@ export const getMe = () => request("/api/auth/me");
 export const createAccount = (email: string, password: string) =>
   request("/api/accounts/", { method: "POST", body: JSON.stringify({ email, password }) });
 
+export const createAccountWithCookies = (email: string, cookies: string) =>
+  request("/api/accounts/cookies", { method: "POST", body: JSON.stringify({ email, cookies }) });
+
 export const getAccounts = () => request("/api/accounts/");
 
 export const loginAccount = (id: number) =>

@@ -1,13 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getAccounts, createAccount, loginAccount, deleteAccount } from "@/lib/api";
+import { getAccounts, createAccount, createAccountWithCookies, deleteAccount } from "@/lib/api";
+
+type AddMethod = "cookies" | "password";
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<any[]>([]);
   const [showForm, setShowForm] = useState(false);
+  const [method, setMethod] = useState<AddMethod>("cookies");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [cookies, setCookies] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -22,25 +26,20 @@ export default function AccountsPage() {
     setLoading(true);
     setError("");
     try {
-      await createAccount(email, password);
+      if (method === "cookies") {
+        await createAccountWithCookies(email, cookies);
+      } else {
+        await createAccount(email, password);
+      }
       setEmail("");
       setPassword("");
+      setCookies("");
       setShowForm(false);
       fetchAccounts();
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleLogin = async (id: number) => {
-    try {
-      await loginAccount(id);
-      alert("Login started. It may take a minute — refresh the page to check status.");
-      fetchAccounts();
-    } catch (err: any) {
-      alert(err.message);
     }
   };
 
@@ -69,29 +68,91 @@ export default function AccountsPage() {
       {showForm && (
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6">
           <h2 className="text-lg font-semibold text-slate-700 mb-4">Connect LinkedIn Account</h2>
-          <form onSubmit={handleCreate} className="space-y-4 max-w-md">
+
+          {/* Method Toggle */}
+          <div className="flex gap-2 mb-5">
+            <button
+              onClick={() => setMethod("cookies")}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+                method === "cookies"
+                  ? "bg-green-600 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              Paste Cookies (Recommended)
+            </button>
+            <button
+              onClick={() => setMethod("password")}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+                method === "password"
+                  ? "bg-green-600 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              Email &amp; Password
+            </button>
+          </div>
+
+          <form onSubmit={handleCreate} className="space-y-4 max-w-xl">
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1">Email</label>
+              <label className="block text-sm font-medium text-slate-600 mb-1">LinkedIn Email</label>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                placeholder="your-email@example.com"
+                placeholder="your-linkedin-email@example.com"
               />
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                placeholder="Your LinkedIn password"
-              />
-            </div>
+
+            {method === "cookies" ? (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-1">LinkedIn Cookies</label>
+                  <textarea
+                    value={cookies}
+                    onChange={(e) => setCookies(e.target.value)}
+                    required
+                    rows={5}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder='Paste your LinkedIn cookies here (JSON array or "name=value; name2=value2" format)'
+                  />
+                </div>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
+                  <p className="font-semibold mb-2">How to get your LinkedIn cookies:</p>
+                  <ol className="list-decimal list-inside space-y-1 text-blue-700">
+                    <li>Open <strong>linkedin.com</strong> in Chrome and make sure you&apos;re logged in</li>
+                    <li>Press <strong>F12</strong> to open DevTools</li>
+                    <li>Go to <strong>Application</strong> tab &rarr; <strong>Cookies</strong> &rarr; <strong>linkedin.com</strong></li>
+                    <li>Find the cookie named <strong>li_at</strong> and copy its value</li>
+                    <li>Paste here as: <code className="bg-blue-100 px-1 rounded">li_at=YOUR_VALUE</code></li>
+                  </ol>
+                  <p className="mt-2 text-xs text-blue-600">
+                    Or use a browser extension like &quot;EditThisCookie&quot; to export all cookies as JSON.
+                  </p>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-1">Password</label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="Your LinkedIn password"
+                  />
+                </div>
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-700">
+                  Note: Login via password requires running the automation worker locally to complete the LinkedIn login.
+                  The cookie method is recommended as it works instantly.
+                </div>
+              </>
+            )}
+
             {error && <p className="text-red-500 text-sm">{error}</p>}
             <div className="flex gap-3">
               <button
@@ -99,11 +160,11 @@ export default function AccountsPage() {
                 disabled={loading}
                 className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50 transition"
               >
-                {loading ? "Saving..." : "Save Account"}
+                {loading ? "Connecting..." : method === "cookies" ? "Connect Account" : "Save Account"}
               </button>
               <button
                 type="button"
-                onClick={() => setShowForm(false)}
+                onClick={() => { setShowForm(false); setError(""); }}
                 className="border border-slate-300 text-slate-600 px-4 py-2 rounded-lg text-sm hover:bg-slate-50 transition"
               >
                 Cancel
@@ -143,27 +204,19 @@ export default function AccountsPage() {
                           : "bg-slate-100 text-slate-600"
                       }`}
                     >
-                      {a.status.replace("_", " ")}
+                      {a.status === "active" ? "Active" : a.status === "login_required" ? "Login Required" : a.status}
                     </span>
                   </td>
                   <td className="px-6 py-4 text-sm text-slate-500">
                     {new Date(a.created_at).toLocaleDateString()}
                   </td>
                   <td className="px-6 py-4">
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleLogin(a.id)}
-                        className="text-sm text-blue-600 hover:text-blue-700 font-medium"
-                      >
-                        Login
-                      </button>
-                      <button
-                        onClick={() => handleDelete(a.id)}
-                        className="text-sm text-red-500 hover:text-red-600 font-medium"
-                      >
-                        Delete
-                      </button>
-                    </div>
+                    <button
+                      onClick={() => handleDelete(a.id)}
+                      className="text-sm text-red-500 hover:text-red-600 font-medium"
+                    >
+                      Delete
+                    </button>
                   </td>
                 </tr>
               ))}
