@@ -3,8 +3,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 
 from app.database import get_db
-from app.models import Campaign, Lead, CampaignStatus, LeadStatus, Account
+from app.models import Campaign, Lead, CampaignStatus, LeadStatus, Account, User
 from app.schemas import CampaignCreate, CampaignUpdate, CampaignResponse, CampaignStats
+from app.auth import get_current_user
 
 router = APIRouter()
 
@@ -40,12 +41,15 @@ def _build_campaign_response(campaign: Campaign, db: Session) -> CampaignRespons
 
 
 @router.post("/", response_model=CampaignResponse)
-def create_campaign(data: CampaignCreate, db: Session = Depends(get_db)):
-    account = db.execute(select(Account).where(Account.id == data.account_id)).scalar_one_or_none()
+def create_campaign(data: CampaignCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    account = db.execute(
+        select(Account).where(Account.id == data.account_id, Account.user_id == user.id)
+    ).scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
     campaign = Campaign(
+        user_id=user.id,
         account_id=data.account_id,
         name=data.name,
         daily_limit=min(data.daily_limit, 30),
@@ -59,23 +63,29 @@ def create_campaign(data: CampaignCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/", response_model=list[CampaignResponse])
-def list_campaigns(db: Session = Depends(get_db)):
-    result = db.execute(select(Campaign).order_by(Campaign.created_at.desc()))
+def list_campaigns(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    result = db.execute(
+        select(Campaign).where(Campaign.user_id == user.id).order_by(Campaign.created_at.desc())
+    )
     campaigns = result.scalars().all()
     return [_build_campaign_response(c, db) for c in campaigns]
 
 
 @router.get("/{campaign_id}", response_model=CampaignResponse)
-def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
-    campaign = db.execute(select(Campaign).where(Campaign.id == campaign_id)).scalar_one_or_none()
+def get_campaign(campaign_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    campaign = db.execute(
+        select(Campaign).where(Campaign.id == campaign_id, Campaign.user_id == user.id)
+    ).scalar_one_or_none()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     return _build_campaign_response(campaign, db)
 
 
 @router.put("/{campaign_id}", response_model=CampaignResponse)
-def update_campaign(campaign_id: int, data: CampaignUpdate, db: Session = Depends(get_db)):
-    campaign = db.execute(select(Campaign).where(Campaign.id == campaign_id)).scalar_one_or_none()
+def update_campaign(campaign_id: int, data: CampaignUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    campaign = db.execute(
+        select(Campaign).where(Campaign.id == campaign_id, Campaign.user_id == user.id)
+    ).scalar_one_or_none()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -92,8 +102,10 @@ def update_campaign(campaign_id: int, data: CampaignUpdate, db: Session = Depend
 
 
 @router.post("/{campaign_id}/start")
-def start_campaign(campaign_id: int, db: Session = Depends(get_db)):
-    campaign = db.execute(select(Campaign).where(Campaign.id == campaign_id)).scalar_one_or_none()
+def start_campaign(campaign_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    campaign = db.execute(
+        select(Campaign).where(Campaign.id == campaign_id, Campaign.user_id == user.id)
+    ).scalar_one_or_none()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -103,8 +115,10 @@ def start_campaign(campaign_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{campaign_id}/stop")
-def stop_campaign(campaign_id: int, db: Session = Depends(get_db)):
-    campaign = db.execute(select(Campaign).where(Campaign.id == campaign_id)).scalar_one_or_none()
+def stop_campaign(campaign_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    campaign = db.execute(
+        select(Campaign).where(Campaign.id == campaign_id, Campaign.user_id == user.id)
+    ).scalar_one_or_none()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -114,8 +128,10 @@ def stop_campaign(campaign_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/{campaign_id}")
-def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
-    campaign = db.execute(select(Campaign).where(Campaign.id == campaign_id)).scalar_one_or_none()
+def delete_campaign(campaign_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    campaign = db.execute(
+        select(Campaign).where(Campaign.id == campaign_id, Campaign.user_id == user.id)
+    ).scalar_one_or_none()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     db.delete(campaign)

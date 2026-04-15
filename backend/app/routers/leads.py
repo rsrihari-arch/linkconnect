@@ -5,10 +5,20 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.database import get_db
-from app.models import Lead, Campaign, LeadStatus
+from app.models import Lead, Campaign, LeadStatus, User
 from app.schemas import LeadResponse
+from app.auth import get_current_user
 
 router = APIRouter()
+
+
+def _get_user_campaign(campaign_id: int, user: User, db: Session) -> Campaign:
+    campaign = db.execute(
+        select(Campaign).where(Campaign.id == campaign_id, Campaign.user_id == user.id)
+    ).scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return campaign
 
 
 @router.post("/{campaign_id}/leads/upload")
@@ -16,10 +26,9 @@ def upload_leads(
     campaign_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    campaign = db.execute(select(Campaign).where(Campaign.id == campaign_id)).scalar_one_or_none()
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+    campaign = _get_user_campaign(campaign_id, user, db)
 
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files are accepted")
@@ -67,10 +76,9 @@ def add_single_lead(
     linkedin_url: str,
     name: str = None,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    campaign = db.execute(select(Campaign).where(Campaign.id == campaign_id)).scalar_one_or_none()
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+    campaign = _get_user_campaign(campaign_id, user, db)
 
     url = linkedin_url.strip()
     if not url.startswith("http"):
@@ -101,7 +109,10 @@ def list_leads(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    campaign = _get_user_campaign(campaign_id, user, db)
+
     query = select(Lead).where(Lead.campaign_id == campaign_id)
     if status:
         query = query.where(Lead.status == status)
@@ -112,7 +123,9 @@ def list_leads(
 
 
 @router.delete("/{campaign_id}/leads/{lead_id}")
-def delete_lead(campaign_id: int, lead_id: int, db: Session = Depends(get_db)):
+def delete_lead(campaign_id: int, lead_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    campaign = _get_user_campaign(campaign_id, user, db)
+
     lead = db.execute(
         select(Lead).where(Lead.id == lead_id, Lead.campaign_id == campaign_id)
     ).scalar_one_or_none()

@@ -69,9 +69,12 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     if (!newLeadUrl.trim()) return;
     setAddingLead(true);
     try {
+      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(
         `${API_BASE}/api/campaigns/${campaignId}/leads?linkedin_url=${encodeURIComponent(newLeadUrl.trim())}&name=${encodeURIComponent(newLeadName.trim())}`,
-        { method: "POST" }
+        { method: "POST", headers }
       );
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: "Failed" }));

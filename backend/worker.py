@@ -86,7 +86,7 @@ async def login_account(email: str, password: str, headless: bool = True) -> Lis
     page = await context.new_page()
 
     try:
-        await page.goto("https://www.linkedin.com/login", wait_until="networkidle")
+        await page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
         await page.fill("#username", email)
         await asyncio.sleep(random.uniform(0.5, 1.5))
         await page.fill("#password", password)
@@ -147,7 +147,7 @@ async def send_connection_request(
     page = await context.new_page()
 
     try:
-        await page.goto(profile_url, wait_until="networkidle", timeout=30000)
+        await page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
         await asyncio.sleep(random.uniform(2, 5))
 
         # Check if already connected
