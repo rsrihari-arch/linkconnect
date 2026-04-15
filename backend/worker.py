@@ -21,6 +21,7 @@ import ssl
 import sys
 import datetime
 import signal
+from typing import Optional, List
 
 from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import sessionmaker, Session
@@ -68,7 +69,7 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 
 # --- LinkedIn Automation ---
 
-async def login_account(email: str, password: str, headless: bool = True) -> list[dict]:
+async def login_account(email: str, password: str, headless: bool = True) -> List[dict]:
     """Login to LinkedIn and return session cookies."""
     from playwright.async_api import async_playwright
 
@@ -125,9 +126,9 @@ async def login_account(email: str, password: str, headless: bool = True) -> lis
 
 
 async def send_connection_request(
-    cookies: list[dict],
+    cookies: List[dict],
     profile_url: str,
-    message: str | None = None,
+    message: Optional[str] = None,
     headless: bool = True,
 ) -> dict:
     """Visit a LinkedIn profile and send a connection request."""
