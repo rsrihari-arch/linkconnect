@@ -16,7 +16,7 @@ class Settings(BaseSettings):
         env_file = ".env"
 
     def encrypt(self, plaintext: str) -> str:
-        key = hashlib.sha256(self.encryption_key.encode()).digest()
+        key = hashlib.sha256(self.encryption_key.strip().encode()).digest()
         encoded = base64.b64encode(plaintext.encode()).decode()
         # Simple XOR obfuscation with key
         result = []
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
         return base64.b64encode("".join(result).encode("latin-1")).decode()
 
     def decrypt(self, ciphertext: str) -> str:
-        key = hashlib.sha256(self.encryption_key.encode()).digest()
+        key = hashlib.sha256(self.encryption_key.strip().encode()).digest()
         decoded = base64.b64decode(ciphertext.encode()).decode("latin-1")
         result = []
         for i, ch in enumerate(decoded):
