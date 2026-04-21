@@ -183,8 +183,8 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   const progressPct = stats.total > 0 ? Math.round(((stats.invited + stats.connected) / stats.total) * 100) : 0;
   const filteredLeads = statusFilter === "all" ? leads : leads.filter((l: any) => l.status === statusFilter);
 
-  // Compute follow-up stats
-  const totalFollowUpsSent = followUpStats.reduce((sum: number, s: any) => sum + (s.sent || 0), 0);
+  // Compute follow-up stats (prefer API stats, fallback to computed)
+  const totalFollowUpsSent = stats.followups_sent || followUpStats.reduce((sum: number, s: any) => sum + (s.sent || 0), 0);
 
   return (
     <div>
@@ -472,57 +472,79 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       )}
 
       {/* === ANALYTICS TAB === */}
-      {activeTab === "analytics" && (
+      {activeTab === "analytics" && (() => {
+        const inviteSent = stats.invited + stats.connected;
+        const followupsSent = stats.followups_sent || 0;
+        const followupsFailed = stats.followups_failed || 0;
+        const acceptRate = inviteSent > 0 ? Math.round((stats.connected / inviteSent) * 100) : 0;
+
+        return (
         <div className="space-y-6">
-          {/* Overview Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="bg-white rounded-xl border border-slate-200 p-5">
-              <p className="text-3xl font-bold text-slate-700">{stats.total}</p>
-              <p className="text-sm text-slate-500 mt-1">Total Members</p>
-            </div>
-            <div className="bg-white rounded-xl border border-blue-200 p-5">
-              <p className="text-3xl font-bold text-blue-600">{stats.invited}</p>
-              <p className="text-sm text-slate-500 mt-1">Invites Sent</p>
-            </div>
-            <div className="bg-white rounded-xl border border-green-200 p-5">
-              <p className="text-3xl font-bold text-green-600">{stats.connected}</p>
-              <p className="text-sm text-slate-500 mt-1">Connected</p>
-            </div>
-            <div className="bg-white rounded-xl border border-purple-200 p-5">
-              <p className="text-3xl font-bold text-purple-600">{totalFollowUpsSent}</p>
-              <p className="text-sm text-slate-500 mt-1">Follow-ups Sent</p>
+          {/* Overview Cards - 2 rows */}
+          <div>
+            <h3 className="text-sm font-medium text-slate-500 mb-3 uppercase tracking-wider">Outreach</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-white rounded-xl border border-slate-200 p-5">
+                <p className="text-3xl font-bold text-slate-700">{stats.total}</p>
+                <p className="text-sm text-slate-500 mt-1">Total Members</p>
+              </div>
+              <div className="bg-white rounded-xl border border-blue-200 p-5">
+                <p className="text-3xl font-bold text-blue-600">{inviteSent}</p>
+                <p className="text-sm text-slate-500 mt-1">Contacts Invited</p>
+              </div>
+              <div className="bg-white rounded-xl border border-green-200 p-5">
+                <p className="text-3xl font-bold text-green-600">{stats.connected}</p>
+                <p className="text-sm text-slate-500 mt-1">Connected</p>
+              </div>
+              <div className="bg-white rounded-xl border border-red-200 p-5">
+                <p className="text-3xl font-bold text-red-500">{stats.failed + stats.skipped}</p>
+                <p className="text-sm text-slate-500 mt-1">Failed / Skipped</p>
+              </div>
             </div>
           </div>
 
-          {/* Conversion Rates */}
+          <div>
+            <h3 className="text-sm font-medium text-slate-500 mb-3 uppercase tracking-wider">After Connection</h3>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              <div className="bg-white rounded-xl border border-purple-200 p-5">
+                <p className="text-3xl font-bold text-purple-600">{followupsSent}</p>
+                <p className="text-sm text-slate-500 mt-1">Follow-up Messages Sent</p>
+              </div>
+              <div className="bg-white rounded-xl border border-orange-200 p-5">
+                <p className="text-3xl font-bold text-orange-500">{followupsFailed}</p>
+                <p className="text-sm text-slate-500 mt-1">Follow-ups Failed</p>
+              </div>
+              <div className="bg-white rounded-xl border border-teal-200 p-5">
+                <p className="text-3xl font-bold text-teal-600">{followUpSteps.length}</p>
+                <p className="text-sm text-slate-500 mt-1">Sequence Steps</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Full Funnel */}
           <div className="bg-white rounded-xl border border-slate-200 p-5">
-            <h3 className="text-base font-semibold text-slate-700 mb-4">Conversion Funnel</h3>
+            <h3 className="text-base font-semibold text-slate-700 mb-5">Campaign Funnel</h3>
             <div className="space-y-4">
-              {/* Invite Rate */}
+              {[
+                { label: "Invite Sent", value: inviteSent, base: stats.total, color: "bg-blue-500", desc: `${stats.total > 0 ? Math.round((inviteSent / stats.total) * 100) : 0}% of total` },
+                { label: "Connection Accepted", value: stats.connected, base: inviteSent, color: "bg-green-500", desc: `${acceptRate}% accept rate` },
+                { label: "Follow-up Messages Sent", value: followupsSent, base: stats.connected, color: "bg-purple-500", desc: `${stats.connected > 0 ? Math.round((followupsSent / stats.connected) * 100) : 0}% of connected` },
+              ].map((step) => (
+                <div key={step.label}>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-slate-600">{step.label}</span>
+                    <span className="font-medium">{step.value} <span className="text-slate-400 font-normal">({step.desc})</span></span>
+                  </div>
+                  <div className="w-full bg-slate-100 rounded-full h-3">
+                    <div className={`${step.color} h-3 rounded-full transition-all`} style={{ width: `${step.base > 0 ? Math.min((step.value / step.base) * 100, 100) : 0}%` }} />
+                  </div>
+                </div>
+              ))}
+              {/* Failure bar */}
               <div>
                 <div className="flex justify-between text-sm mb-1">
-                  <span className="text-slate-600">Invite Sent Rate</span>
-                  <span className="font-medium">{stats.total > 0 ? Math.round(((stats.invited + stats.connected) / stats.total) * 100) : 0}%</span>
-                </div>
-                <div className="w-full bg-slate-100 rounded-full h-3">
-                  <div className="bg-blue-500 h-3 rounded-full transition-all" style={{ width: `${stats.total > 0 ? ((stats.invited + stats.connected) / stats.total) * 100 : 0}%` }} />
-                </div>
-              </div>
-              {/* Accept Rate */}
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-slate-600">Connection Accept Rate</span>
-                  <span className="font-medium">{(stats.invited + stats.connected) > 0 ? Math.round((stats.connected / (stats.invited + stats.connected)) * 100) : 0}%</span>
-                </div>
-                <div className="w-full bg-slate-100 rounded-full h-3">
-                  <div className="bg-green-500 h-3 rounded-full transition-all" style={{ width: `${(stats.invited + stats.connected) > 0 ? (stats.connected / (stats.invited + stats.connected)) * 100 : 0}%` }} />
-                </div>
-              </div>
-              {/* Failure Rate */}
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-slate-600">Failure Rate</span>
-                  <span className="font-medium">{stats.total > 0 ? Math.round(((stats.failed + stats.skipped) / stats.total) * 100) : 0}%</span>
+                  <span className="text-slate-600">Failed / Skipped</span>
+                  <span className="font-medium">{stats.failed + stats.skipped} <span className="text-slate-400 font-normal">({stats.total > 0 ? Math.round(((stats.failed + stats.skipped) / stats.total) * 100) : 0}% of total)</span></span>
                 </div>
                 <div className="w-full bg-slate-100 rounded-full h-3">
                   <div className="bg-red-400 h-3 rounded-full transition-all" style={{ width: `${stats.total > 0 ? ((stats.failed + stats.skipped) / stats.total) * 100 : 0}%` }} />
@@ -531,29 +553,42 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
             </div>
           </div>
 
-          {/* Follow-up Performance */}
+          {/* Follow-up Step Performance */}
           {followUpStats.length > 0 && (
             <div className="bg-white rounded-xl border border-slate-200 p-5">
-              <h3 className="text-base font-semibold text-slate-700 mb-4">Follow-up Performance</h3>
+              <h3 className="text-base font-semibold text-slate-700 mb-4">Follow-up Step Performance</h3>
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-slate-200 text-left text-xs font-medium text-slate-500 uppercase">
                       <th className="px-4 py-2">Step</th>
                       <th className="px-4 py-2">Delay</th>
-                      <th className="px-4 py-2">Sent</th>
+                      <th className="px-4 py-2">Messages Sent</th>
                       <th className="px-4 py-2">Failed</th>
+                      <th className="px-4 py-2">Delivery Rate</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {followUpStats.map((s: any) => (
-                      <tr key={s.step_id}>
-                        <td className="px-4 py-2 text-sm text-slate-700">Step {s.step_order}</td>
-                        <td className="px-4 py-2 text-sm text-slate-500">{s.delay_days} day{s.delay_days > 1 ? "s" : ""}</td>
-                        <td className="px-4 py-2 text-sm text-green-600 font-medium">{s.sent}</td>
-                        <td className="px-4 py-2 text-sm text-red-500">{s.failed}</td>
-                      </tr>
-                    ))}
+                    {followUpStats.map((s: any) => {
+                      const stepTotal = (s.sent || 0) + (s.failed || 0);
+                      const deliveryRate = stepTotal > 0 ? Math.round((s.sent / stepTotal) * 100) : 0;
+                      return (
+                        <tr key={s.step_id}>
+                          <td className="px-4 py-3 text-sm font-medium text-slate-700">Step {s.step_order}</td>
+                          <td className="px-4 py-3 text-sm text-slate-500">{s.delay_days} day{s.delay_days > 1 ? "s" : ""} after connection</td>
+                          <td className="px-4 py-3 text-sm text-green-600 font-medium">{s.sent}</td>
+                          <td className="px-4 py-3 text-sm text-red-500">{s.failed}</td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              <div className="w-16 bg-slate-100 rounded-full h-2">
+                                <div className="bg-green-500 h-2 rounded-full" style={{ width: `${deliveryRate}%` }} />
+                              </div>
+                              <span className="text-xs text-slate-500">{deliveryRate}%</span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -585,7 +620,8 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

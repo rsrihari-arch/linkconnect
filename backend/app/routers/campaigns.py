@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 
 from app.database import get_db
-from app.models import Campaign, Lead, CampaignStatus, LeadStatus, Account, User
+from app.models import Campaign, Lead, CampaignStatus, LeadStatus, Account, User, FollowUpStep, FollowUpLog
 from app.schemas import CampaignCreate, CampaignUpdate, CampaignResponse, CampaignStats
 from app.auth import get_current_user
 
@@ -19,6 +19,26 @@ def _build_campaign_response(campaign: Campaign, db: Session) -> CampaignRespons
     status_counts = {row[0]: row[1] for row in stats_query.all()}
 
     total = sum(status_counts.values())
+
+    # Count follow-up messages sent for this campaign
+    followup_sent = db.execute(
+        select(func.count(FollowUpLog.id)).where(
+            FollowUpLog.step_id.in_(
+                select(FollowUpStep.id).where(FollowUpStep.campaign_id == campaign.id)
+            ),
+            FollowUpLog.status == "sent",
+        )
+    ).scalar() or 0
+
+    followup_failed = db.execute(
+        select(func.count(FollowUpLog.id)).where(
+            FollowUpLog.step_id.in_(
+                select(FollowUpStep.id).where(FollowUpStep.campaign_id == campaign.id)
+            ),
+            FollowUpLog.status == "failed",
+        )
+    ).scalar() or 0
+
     stats = CampaignStats(
         total=total,
         pending=status_counts.get(LeadStatus.pending, 0),
@@ -26,6 +46,8 @@ def _build_campaign_response(campaign: Campaign, db: Session) -> CampaignRespons
         connected=status_counts.get(LeadStatus.connected, 0),
         failed=status_counts.get(LeadStatus.failed, 0),
         skipped=status_counts.get(LeadStatus.skipped, 0),
+        followups_sent=followup_sent,
+        followups_failed=followup_failed,
     )
 
     return CampaignResponse(

@@ -48,6 +48,8 @@ class CampaignStats(BaseModel):
     connected: int = 0
     failed: int = 0
     skipped: int = 0
+    followups_sent: int = 0
+    followups_failed: int = 0
 
 
 class CampaignResponse(BaseModel):
