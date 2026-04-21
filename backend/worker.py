@@ -67,6 +67,72 @@ signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
 
+# --- Human-like Behavior ---
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+]
+
+VIEWPORTS = [
+    {"width": 1280, "height": 800},
+    {"width": 1366, "height": 768},
+    {"width": 1440, "height": 900},
+    {"width": 1536, "height": 864},
+]
+
+
+def get_warmup_limit(campaign_created_at) -> int:
+    """Gradually increase daily limit during warmup period to avoid detection."""
+    days_active = (datetime.datetime.utcnow() - campaign_created_at).days
+    if days_active >= settings.warmup_days:
+        return settings.daily_limit_max
+    # Ramp up: start at warmup_start_limit, increase by ~3-4 per day
+    ramp = settings.warmup_start_limit + int((settings.daily_limit_max - settings.warmup_start_limit) * (days_active / settings.warmup_days))
+    return max(settings.warmup_start_limit, min(ramp, settings.daily_limit_max))
+
+
+async def human_like_scroll(page):
+    """Scroll the page like a human would - random distance, random pauses."""
+    scrolls = random.randint(1, 3)
+    for _ in range(scrolls):
+        distance = random.randint(200, 500)
+        await page.mouse.wheel(0, distance)
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+
+
+async def create_stealth_context(pw, cookies: Optional[List[dict]] = None, headless: bool = True):
+    """Create a browser context with anti-detection measures."""
+    browser = await pw.chromium.launch(
+        headless=headless,
+        args=[
+            "--no-sandbox",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-dev-shm-usage",
+        ],
+    )
+    ua = random.choice(USER_AGENTS)
+    vp = random.choice(VIEWPORTS)
+    context = await browser.new_context(
+        user_agent=ua,
+        viewport=vp,
+        locale="en-US",
+        timezone_id="Asia/Kolkata",
+    )
+    # Remove navigator.webdriver flag
+    await context.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        window.chrome = { runtime: {} };
+    """)
+    if cookies:
+        await context.add_cookies(cookies)
+    return browser, context
+
+
 # --- LinkedIn Automation ---
 
 async def login_account(email: str, password: str, headless: bool = True) -> List[dict]:
@@ -75,14 +141,7 @@ async def login_account(email: str, password: str, headless: bool = True) -> Lis
 
     print(f"[Login] Logging into LinkedIn as {email}...")
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        headless=headless,
-        args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-    )
-    context = await browser.new_context(
-        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        viewport={"width": 1280, "height": 800},
-    )
+    browser, context = await create_stealth_context(pw, headless=headless)
     page = await context.new_page()
 
     try:
@@ -136,20 +195,14 @@ async def send_connection_request(
     from playwright.async_api import async_playwright
 
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        headless=headless,
-        args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-    )
-    context = await browser.new_context(
-        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        viewport={"width": 1280, "height": 800},
-    )
-    await context.add_cookies(cookies)
+    browser, context = await create_stealth_context(pw, cookies=cookies, headless=headless)
     page = await context.new_page()
 
     try:
         await page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
-        await asyncio.sleep(random.uniform(3, 6))
+        await asyncio.sleep(random.uniform(3, 7))
+        await human_like_scroll(page)
+        await asyncio.sleep(random.uniform(1, 3))
 
         # Get the topcard section (contains name, headline, action buttons)
         top_card = page.locator('section[componentkey*="Topcard"]')
@@ -289,20 +342,14 @@ async def send_linkedin_message(
     from playwright.async_api import async_playwright
 
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        headless=headless,
-        args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-    )
-    context = await browser.new_context(
-        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        viewport={"width": 1280, "height": 800},
-    )
-    await context.add_cookies(cookies)
+    browser, context = await create_stealth_context(pw, cookies=cookies, headless=headless)
     page = await context.new_page()
 
     try:
         await page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
-        await asyncio.sleep(random.uniform(3, 6))
+        await asyncio.sleep(random.uniform(3, 7))
+        await human_like_scroll(page)
+        await asyncio.sleep(random.uniform(1, 3))
 
         # Find Message button in topcard
         top_card = page.locator('section[componentkey*="Topcard"]')
@@ -368,15 +415,7 @@ async def check_connection_accepted(
     from playwright.async_api import async_playwright
 
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        headless=headless,
-        args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-    )
-    context = await browser.new_context(
-        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        viewport={"width": 1280, "height": 800},
-    )
-    await context.add_cookies(cookies)
+    browser, context = await create_stealth_context(pw, cookies=cookies, headless=headless)
     page = await context.new_page()
 
     try:
@@ -471,12 +510,17 @@ def process_campaigns(db: Session, headless: bool):
             )
         ).scalar() or 0
 
-        remaining = campaign.daily_limit - sent_today
+        # Apply warm-up: gradually increase limit for new campaigns
+        warmup_limit = get_warmup_limit(campaign.created_at)
+        effective_limit = min(campaign.daily_limit, warmup_limit)
+        remaining = effective_limit - sent_today
         if remaining <= 0:
-            print(f"[Campaign] Daily limit reached ({campaign.daily_limit}). Skipping.")
+            print(f"[Campaign] Daily limit reached ({sent_today}/{effective_limit}). Skipping.")
             continue
 
-        print(f"[Campaign] {sent_today}/{campaign.daily_limit} sent today. {remaining} remaining.")
+        days_active = (datetime.datetime.utcnow() - campaign.created_at).days
+        warmup_note = f" (warmup: day {days_active}/{settings.warmup_days})" if days_active < settings.warmup_days else ""
+        print(f"[Campaign] {sent_today}/{effective_limit} sent today. {remaining} remaining.{warmup_note}")
 
         # Get pending leads
         leads = db.execute(

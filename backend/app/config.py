@@ -9,8 +9,10 @@ class Settings(BaseSettings):
     secret_key: str = "changeme"
     headless: bool = True
     daily_limit_max: int = 30
-    min_delay: int = 20
-    max_delay: int = 60
+    min_delay: int = 30
+    max_delay: int = 90
+    warmup_days: int = 7
+    warmup_start_limit: int = 5
 
     class Config:
         env_file = ".env"
