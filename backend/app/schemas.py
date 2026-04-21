@@ -80,7 +80,44 @@ class LeadResponse(BaseModel):
     retry_count: int
     error_message: Optional[str]
     last_action_at: Optional[datetime]
+    connected_at: Optional[datetime] = None
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# --- Follow-Up Schemas ---
+
+class FollowUpStepCreate(BaseModel):
+    message_template: str
+    delay_days: int = 1
+
+
+class FollowUpStepUpdate(BaseModel):
+    message_template: Optional[str] = None
+    delay_days: Optional[int] = None
+
+
+class FollowUpStepResponse(BaseModel):
+    id: int
+    campaign_id: int
+    step_order: int
+    message_template: str
+    delay_days: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FollowUpLogResponse(BaseModel):
+    id: int
+    lead_id: int
+    step_id: int
+    status: str
+    error_message: Optional[str]
+    sent_at: datetime
 
     class Config:
         from_attributes = True

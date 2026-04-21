@@ -87,6 +87,7 @@ class Campaign(Base):
     user = relationship("User", back_populates="campaigns")
     account = relationship("Account", back_populates="campaigns")
     leads = relationship("Lead", back_populates="campaign", cascade="all, delete-orphan")
+    follow_up_steps = relationship("FollowUpStep", back_populates="campaign", cascade="all, delete-orphan", order_by="FollowUpStep.step_order")
 
 
 class Lead(Base):
@@ -100,6 +101,35 @@ class Lead(Base):
     retry_count = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
     last_action_at = Column(DateTime, nullable=True)
+    connected_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     campaign = relationship("Campaign", back_populates="leads")
+    follow_up_logs = relationship("FollowUpLog", back_populates="lead", cascade="all, delete-orphan")
+
+
+class FollowUpStep(Base):
+    __tablename__ = "follow_up_steps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False)
+    step_order = Column(Integer, nullable=False, default=1)
+    message_template = Column(Text, nullable=False)
+    delay_days = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    campaign = relationship("Campaign", back_populates="follow_up_steps")
+
+
+class FollowUpLog(Base):
+    __tablename__ = "follow_up_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False)
+    step_id = Column(Integer, ForeignKey("follow_up_steps.id"), nullable=False)
+    status = Column(String(20), default="sent")
+    error_message = Column(Text, nullable=True)
+    sent_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    lead = relationship("Lead", back_populates="follow_up_logs")
+    step = relationship("FollowUpStep")

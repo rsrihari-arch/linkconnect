@@ -29,7 +29,7 @@ from sqlalchemy.orm import sessionmaker, Session
 # Add parent to path so we can import app modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.models import Base, Account, Campaign, Lead, AccountStatus, CampaignStatus, LeadStatus
+from app.models import Base, Account, Campaign, Lead, AccountStatus, CampaignStatus, LeadStatus, FollowUpStep, FollowUpLog
 from app.config import settings
 
 
@@ -279,6 +279,136 @@ async def _find_connect_button_in(container):
     return None
 
 
+async def send_linkedin_message(
+    cookies: List[dict],
+    profile_url: str,
+    message: str,
+    headless: bool = True,
+) -> dict:
+    """Send a LinkedIn message to someone you're connected with."""
+    from playwright.async_api import async_playwright
+
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(
+        headless=headless,
+        args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+    )
+    context = await browser.new_context(
+        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        viewport={"width": 1280, "height": 800},
+    )
+    await context.add_cookies(cookies)
+    page = await context.new_page()
+
+    try:
+        await page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(random.uniform(3, 6))
+
+        # Find Message button in topcard
+        top_card = page.locator('section[componentkey*="Topcard"]')
+        if await top_card.count() == 0:
+            top_card = page.locator('main section').first
+
+        msg_btn = None
+        # Try link first (LinkedIn uses <a> tags)
+        msg_link = top_card.locator('a:has-text("Message")')
+        if await msg_link.count() > 0:
+            msg_btn = msg_link.first
+        else:
+            # Try button
+            msg_button = top_card.locator('button:has-text("Message")')
+            if await msg_button.count() > 0:
+                msg_btn = msg_button.first
+
+        if not msg_btn:
+            return {"status": "no_message_button"}
+
+        await msg_btn.click()
+        await asyncio.sleep(3)
+
+        # Find the message input in the messaging overlay/panel
+        msg_input = page.locator('div[role="textbox"][contenteditable="true"]')
+        if await msg_input.count() == 0:
+            # Try textarea fallback
+            msg_input = page.locator('textarea[name="message"]')
+        if await msg_input.count() == 0:
+            return {"status": "no_message_input"}
+
+        await msg_input.first.click()
+        await asyncio.sleep(0.5)
+        await msg_input.first.fill(message)
+        await asyncio.sleep(1)
+
+        # Click Send
+        send_btn = page.locator('button[type="submit"]:has-text("Send"), button.msg-form__send-button, button[aria-label="Send"]')
+        if await send_btn.count() > 0:
+            await send_btn.first.click()
+            await asyncio.sleep(2)
+            return {"status": "sent"}
+
+        # Fallback: press Enter
+        await msg_input.first.press("Enter")
+        await asyncio.sleep(2)
+        return {"status": "sent"}
+
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+    finally:
+        await context.close()
+        await browser.close()
+        await pw.stop()
+
+
+async def check_connection_accepted(
+    cookies: List[dict],
+    profile_url: str,
+    headless: bool = True,
+) -> bool:
+    """Check if a previously invited person has accepted the connection."""
+    from playwright.async_api import async_playwright
+
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(
+        headless=headless,
+        args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+    )
+    context = await browser.new_context(
+        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        viewport={"width": 1280, "height": 800},
+    )
+    await context.add_cookies(cookies)
+    page = await context.new_page()
+
+    try:
+        await page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(random.uniform(3, 5))
+
+        top_card = page.locator('section[componentkey*="Topcard"]')
+        if await top_card.count() == 0:
+            top_card = page.locator('main section').first
+
+        top_text = await top_card.text_content() or ""
+        return "· 1st" in top_text
+    except Exception:
+        return False
+    finally:
+        await context.close()
+        await browser.close()
+        await pw.stop()
+
+
+def _render_template(template: str, lead) -> str:
+    """Replace template variables like {first_name}, {name}, {company}."""
+    text = template
+    name = lead.name or ""
+    parts = name.split() if name else []
+    text = text.replace("{first_name}", parts[0] if parts else "")
+    text = text.replace("{last_name}", parts[-1] if len(parts) > 1 else "")
+    text = text.replace("{name}", name)
+    text = text.replace("{linkedin_url}", lead.linkedin_url or "")
+    return text
+
+
 # --- Worker Logic ---
 
 def process_logins(db: Session, headless: bool):
@@ -428,8 +558,177 @@ def process_campaigns(db: Session, headless: bool):
                 asyncio.run(asyncio.sleep(1))
 
 
+def process_connection_checks(db: Session, headless: bool):
+    """Check if invited leads have accepted the connection."""
+    # Find leads that were invited more than 1 day ago (give time for acceptance)
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+    campaigns = db.execute(
+        select(Campaign).where(Campaign.status.in_([CampaignStatus.active, CampaignStatus.completed]))
+    ).scalars().all()
+
+    for campaign in campaigns:
+        if shutdown_requested:
+            break
+
+        # Only check campaigns that have follow-up steps
+        steps = db.execute(
+            select(FollowUpStep).where(FollowUpStep.campaign_id == campaign.id)
+        ).scalars().all()
+        if not steps:
+            continue
+
+        account = db.execute(
+            select(Account).where(Account.id == campaign.account_id)
+        ).scalar_one_or_none()
+        if not account or not account.session_cookies:
+            continue
+
+        cookies = json.loads(account.session_cookies)
+
+        # Find invited leads to check
+        invited_leads = db.execute(
+            select(Lead).where(
+                Lead.campaign_id == campaign.id,
+                Lead.status == LeadStatus.invited,
+                Lead.last_action_at <= cutoff,
+            ).limit(10)
+        ).scalars().all()
+
+        if not invited_leads:
+            continue
+
+        print(f"\n[Connection Check] Campaign: {campaign.name} - checking {len(invited_leads)} invited leads")
+
+        for lead in invited_leads:
+            if shutdown_requested:
+                break
+
+            accepted = asyncio.run(check_connection_accepted(
+                cookies=cookies,
+                profile_url=lead.linkedin_url,
+                headless=headless,
+            ))
+
+            if accepted:
+                lead.status = LeadStatus.connected
+                lead.connected_at = datetime.datetime.utcnow()
+                print(f"  [Check] {lead.name or 'Unknown'} --> Connected!")
+            else:
+                # Update last_action_at so we don't check too frequently
+                lead.last_action_at = datetime.datetime.utcnow()
+
+            db.commit()
+            await_delay = random.uniform(3, 8)
+            for _ in range(int(await_delay)):
+                if shutdown_requested:
+                    break
+                asyncio.run(asyncio.sleep(1))
+
+
+def process_followups(db: Session, headless: bool):
+    """Send follow-up messages to connected leads."""
+    campaigns = db.execute(
+        select(Campaign).where(Campaign.status.in_([CampaignStatus.active, CampaignStatus.completed]))
+    ).scalars().all()
+
+    for campaign in campaigns:
+        if shutdown_requested:
+            break
+
+        steps = db.execute(
+            select(FollowUpStep)
+            .where(FollowUpStep.campaign_id == campaign.id)
+            .order_by(FollowUpStep.step_order)
+        ).scalars().all()
+
+        if not steps:
+            continue
+
+        account = db.execute(
+            select(Account).where(Account.id == campaign.account_id)
+        ).scalar_one_or_none()
+        if not account or not account.session_cookies:
+            continue
+
+        cookies = json.loads(account.session_cookies)
+
+        # Find connected leads
+        connected_leads = db.execute(
+            select(Lead).where(
+                Lead.campaign_id == campaign.id,
+                Lead.status == LeadStatus.connected,
+                Lead.connected_at.isnot(None),
+            )
+        ).scalars().all()
+
+        if not connected_leads:
+            continue
+
+        print(f"\n[Follow-up] Campaign: {campaign.name} - {len(connected_leads)} connected leads")
+
+        for lead in connected_leads:
+            if shutdown_requested:
+                break
+
+            for step in steps:
+                if shutdown_requested:
+                    break
+
+                # Check if this step was already sent
+                already_sent = db.execute(
+                    select(FollowUpLog).where(
+                        FollowUpLog.lead_id == lead.id,
+                        FollowUpLog.step_id == step.id,
+                    )
+                ).scalar_one_or_none()
+
+                if already_sent:
+                    continue
+
+                # Check if enough days have passed since connection
+                days_since = (datetime.datetime.utcnow() - lead.connected_at).days
+                if days_since < step.delay_days:
+                    break  # Steps are ordered, so if this one isn't due, later ones won't be either
+
+                # Render message with template variables
+                message = _render_template(step.message_template, lead)
+
+                print(f"  [Follow-up] {lead.name or 'Unknown'} - Step {step.step_order} (day {step.delay_days})")
+
+                result = asyncio.run(send_linkedin_message(
+                    cookies=cookies,
+                    profile_url=lead.linkedin_url,
+                    message=message,
+                    headless=headless,
+                ))
+
+                log = FollowUpLog(
+                    lead_id=lead.id,
+                    step_id=step.id,
+                    status=result.get("status", "failed"),
+                    error_message=result.get("error"),
+                )
+                db.add(log)
+                db.commit()
+
+                if result.get("status") == "sent":
+                    print(f"  [Follow-up] --> Message sent!")
+                else:
+                    print(f"  [Follow-up] --> Failed: {result.get('status')}")
+
+                # Delay between messages
+                delay = random.uniform(settings.min_delay, settings.max_delay)
+                print(f"  [Delay] Waiting {delay:.0f}s...")
+                for _ in range(int(delay)):
+                    if shutdown_requested:
+                        break
+                    asyncio.run(asyncio.sleep(1))
+
+                break  # Only send one step per lead per cycle
+
+
 def run_once(headless: bool = True):
-    """Run one cycle: process logins then campaigns."""
+    """Run one cycle: process logins, campaigns, connection checks, follow-ups."""
     db = SessionLocal()
     try:
         print("\n" + "=" * 60)
@@ -438,6 +737,8 @@ def run_once(headless: bool = True):
 
         process_logins(db, headless)
         process_campaigns(db, headless)
+        process_connection_checks(db, headless)
+        process_followups(db, headless)
 
         print(f"\n[Worker] Cycle complete.")
     finally:

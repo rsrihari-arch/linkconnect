@@ -117,3 +117,19 @@ export const getLeads = (campaignId: number, skip = 0, limit = 100) =>
 
 export const deleteLead = (campaignId: number, leadId: number) =>
   request(`/api/campaigns/${campaignId}/leads/${leadId}`, { method: "DELETE" });
+
+// Follow-ups
+export const getFollowUpSteps = (campaignId: number) =>
+  request(`/api/campaigns/${campaignId}/followups`);
+
+export const createFollowUpStep = (campaignId: number, data: { message_template: string; delay_days: number }) =>
+  request(`/api/campaigns/${campaignId}/followups`, { method: "POST", body: JSON.stringify(data) });
+
+export const updateFollowUpStep = (campaignId: number, stepId: number, data: { message_template?: string; delay_days?: number }) =>
+  request(`/api/campaigns/${campaignId}/followups/${stepId}`, { method: "PUT", body: JSON.stringify(data) });
+
+export const deleteFollowUpStep = (campaignId: number, stepId: number) =>
+  request(`/api/campaigns/${campaignId}/followups/${stepId}`, { method: "DELETE" });
+
+export const getFollowUpStats = (campaignId: number) =>
+  request(`/api/campaigns/${campaignId}/followups/stats`);

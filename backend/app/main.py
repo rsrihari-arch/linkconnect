@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import accounts, campaigns, leads, auth
+from app.routers import accounts, campaigns, leads, auth, followups
 
 app = FastAPI(
     title="LinkedIn Automation Platform",
@@ -20,6 +20,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(accounts.router, prefix="/api/accounts", tags=["Accounts"])
 app.include_router(campaigns.router, prefix="/api/campaigns", tags=["Campaigns"])
 app.include_router(leads.router, prefix="/api/campaigns", tags=["Leads"])
+app.include_router(followups.router, prefix="/api/campaigns", tags=["Follow-ups"])
 
 
 @app.get("/api/health")
