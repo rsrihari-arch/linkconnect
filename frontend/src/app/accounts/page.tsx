@@ -133,14 +133,14 @@ export default function AccountsPage() {
 
           <form onSubmit={handleCreate} className="space-y-4 max-w-xl">
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1">LinkedIn Email</label>
+              <label className="block text-sm font-medium text-slate-600 mb-1">LinkedIn Email or Phone Number</label>
               <input
-                type="email"
+                type="text"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                placeholder="your-linkedin-email@example.com"
+                placeholder="email@example.com or +91 98765 43210"
               />
             </div>
 
@@ -228,7 +228,7 @@ export default function AccountsPage() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-slate-200 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
-                <th className="px-6 py-4">Email</th>
+                <th className="px-6 py-4">Email / Phone</th>
                 <th className="px-6 py-4">Status</th>
                 <th className="px-6 py-4">Added</th>
                 <th className="px-6 py-4">Actions</th>

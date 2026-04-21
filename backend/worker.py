@@ -55,6 +55,29 @@ def get_engine():
 engine = get_engine()
 SessionLocal = sessionmaker(bind=engine)
 
+# Run migrations for new columns
+from sqlalchemy import text
+with engine.connect() as conn:
+    try:
+        conn.execute(text("ALTER TYPE accountstatus ADD VALUE IF NOT EXISTS 'verifying'"))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    for col, coltype in [("verification_code", "VARCHAR(20)"), ("login_error", "TEXT")]:
+        try:
+            conn.execute(text(f"ALTER TABLE accounts ADD COLUMN IF NOT EXISTS {col} {coltype}"))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+    try:
+        conn.execute(text("ALTER TABLE leads ADD COLUMN IF NOT EXISTS connected_at TIMESTAMP"))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+# Create any new tables (follow_up_steps, follow_up_logs)
+Base.metadata.create_all(bind=engine)
+
 # Graceful shutdown
 shutdown_requested = False
 
