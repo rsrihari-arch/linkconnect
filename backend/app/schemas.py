@@ -16,10 +16,15 @@ class AccountCreateWithCookies(BaseModel):
     cookies: str
 
 
+class AccountVerifyCode(BaseModel):
+    code: str
+
+
 class AccountResponse(BaseModel):
     id: int
     email: str
     status: AccountStatus
+    login_error: Optional[str] = None
     created_at: datetime
 
     class Config:

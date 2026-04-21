@@ -65,6 +65,12 @@ export const getAccounts = () => request("/api/accounts/");
 export const loginAccount = (id: number) =>
   request(`/api/accounts/${id}/login`, { method: "POST" });
 
+export const getAccount = (id: number) =>
+  request(`/api/accounts/${id}`);
+
+export const submitVerificationCode = (id: number, code: string) =>
+  request(`/api/accounts/${id}/verify-code`, { method: "POST", body: JSON.stringify({ code }) });
+
 export const deleteAccount = (id: number) =>
   request(`/api/accounts/${id}`, { method: "DELETE" });
 

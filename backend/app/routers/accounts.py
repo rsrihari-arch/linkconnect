@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from app.database import get_db
 from app.models import Account, AccountStatus, User
-from app.schemas import AccountCreate, AccountCreateWithCookies, AccountResponse
+from app.schemas import AccountCreate, AccountCreateWithCookies, AccountVerifyCode, AccountResponse
 from app.config import settings
 from app.auth import get_current_user
 
@@ -118,7 +118,27 @@ def login_account(account_id: int, db: Session = Depends(get_db), user: User = D
     ).scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    return {"message": "Login queued. Run the automation worker locally to process logins.", "account_id": account_id}
+    account.status = AccountStatus.login_required
+    account.login_error = None
+    account.verification_code = None
+    db.commit()
+    return {"message": "Login queued. The worker will attempt login and LinkedIn will send a verification code to your email.", "account_id": account_id}
+
+
+@router.post("/{account_id}/verify-code", response_model=AccountResponse)
+def submit_verification_code(account_id: int, data: AccountVerifyCode, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Submit the LinkedIn verification code that was sent to the user's email."""
+    account = db.execute(
+        select(Account).where(Account.id == account_id, Account.user_id == user.id)
+    ).scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if account.status != AccountStatus.verifying:
+        raise HTTPException(status_code=400, detail="Account is not waiting for a verification code")
+    account.verification_code = data.code.strip()
+    db.commit()
+    db.refresh(account)
+    return account
 
 
 @router.delete("/{account_id}")

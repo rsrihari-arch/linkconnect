@@ -11,6 +11,7 @@ class AccountStatus(str, enum.Enum):
     active = "active"
     inactive = "inactive"
     login_required = "login_required"
+    verifying = "verifying"
 
 
 class CampaignStatus(str, enum.Enum):
@@ -64,6 +65,8 @@ class Account(Base):
     encrypted_password = Column(Text, nullable=False)
     session_cookies = Column(Text, nullable=True)
     status = Column(SQLEnum(AccountStatus), default=AccountStatus.login_required)
+    verification_code = Column(String(20), nullable=True)
+    login_error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

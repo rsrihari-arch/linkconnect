@@ -42,3 +42,36 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _run_migrations()
+
+
+def _run_migrations():
+    """Add columns/enum values that create_all won't handle on existing tables."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        # Add 'verifying' to accountstatus enum if missing
+        try:
+            conn.execute(text("ALTER TYPE accountstatus ADD VALUE IF NOT EXISTS 'verifying'"))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Add missing columns to accounts table
+        for col, coltype in [
+            ("verification_code", "VARCHAR(20)"),
+            ("login_error", "TEXT"),
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE accounts ADD COLUMN IF NOT EXISTS {col} {coltype}"))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
+        # Add connected_at to leads table
+        try:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN IF NOT EXISTS connected_at TIMESTAMP"))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+        # Create follow_up_steps and follow_up_logs tables (create_all handles these if new)

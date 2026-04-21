@@ -135,8 +135,8 @@ async def create_stealth_context(pw, cookies: Optional[List[dict]] = None, headl
 
 # --- LinkedIn Automation ---
 
-async def login_account(email: str, password: str, headless: bool = True) -> List[dict]:
-    """Login to LinkedIn and return session cookies."""
+async def login_account(email: str, password: str, account_id: int, db: Session, headless: bool = True) -> List[dict]:
+    """Login to LinkedIn. If verification is needed, waits for user to submit code via the platform."""
     from playwright.async_api import async_playwright
 
     print(f"[Login] Logging into LinkedIn as {email}...")
@@ -155,29 +155,110 @@ async def login_account(email: str, password: str, headless: bool = True) -> Lis
 
         # Wait for redirect to feed
         try:
-            await page.wait_for_url("**/feed/**", timeout=30000)
+            await page.wait_for_url("**/feed/**", timeout=15000)
         except Exception:
-            # Check if there's a security challenge
             current_url = page.url
-            if "challenge" in current_url or "checkpoint" in current_url:
-                print(f"[Login] Security challenge detected at {current_url}")
-                if not headless:
-                    print("[Login] Please complete the challenge in the browser window...")
-                    print("[Login] Waiting up to 2 minutes for you to solve it...")
-                    await page.wait_for_url("**/feed/**", timeout=120000)
-                else:
-                    print("[Login] Re-run with HEADLESS=false to handle the challenge.")
+            # Check if verification/challenge page
+            if "challenge" in current_url or "checkpoint" in current_url or "verify" in current_url:
+                print(f"[Login] Verification required at {current_url}")
+
+                # Mark account as "verifying" so frontend shows code input
+                account = db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
+                if account:
+                    account.status = AccountStatus.verifying
+                    account.login_error = "LinkedIn sent a verification code to your email. Please enter it on the platform."
+                    account.verification_code = None
+                    db.commit()
+
+                # Look for the code input field on the page
+                code_input = page.locator('input[name="pin"], input#input__email_verification_pin, input[name="code"]')
+
+                # Poll the database for up to 3 minutes waiting for the user to submit the code
+                print(f"[Login] Waiting for verification code (up to 3 minutes)...")
+                code = None
+                for _ in range(36):  # 36 * 5 seconds = 3 minutes
+                    if shutdown_requested:
+                        return []
+                    await asyncio.sleep(5)
+                    db.expire_all()
+                    account = db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
+                    if account and account.verification_code:
+                        code = account.verification_code
+                        print(f"[Login] Got verification code from user.")
+                        break
+
+                if not code:
+                    print(f"[Login] Timed out waiting for verification code.")
+                    if account:
+                        account.login_error = "Verification code timed out. Please try logging in again."
+                        account.status = AccountStatus.login_required
+                        db.commit()
                     return []
+
+                # Enter the code
+                if await code_input.count() > 0:
+                    await code_input.first.fill(code)
+                    await asyncio.sleep(1)
+                    # Submit
+                    submit_btn = page.locator('button[type="submit"], button:has-text("Submit"), button:has-text("Verify")')
+                    if await submit_btn.count() > 0:
+                        await submit_btn.first.click()
+                    else:
+                        await code_input.first.press("Enter")
+                    await asyncio.sleep(5)
+                else:
+                    print(f"[Login] Could not find code input field on page.")
+                    if account:
+                        account.login_error = "Could not find verification input on LinkedIn page."
+                        account.status = AccountStatus.login_required
+                        db.commit()
+                    return []
+
+                # Check if we made it to feed
+                try:
+                    await page.wait_for_url("**/feed/**", timeout=15000)
+                except Exception:
+                    print(f"[Login] Still not at feed after code entry. URL: {page.url}")
+                    if account:
+                        account.login_error = f"Verification failed. LinkedIn may need additional steps. Current page: {page.url}"
+                        account.status = AccountStatus.login_required
+                        account.verification_code = None
+                        db.commit()
+                    return []
+
+            elif "wrong" in current_url or "error" in current_url:
+                print(f"[Login] Login error at {current_url}")
+                account = db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
+                if account:
+                    account.login_error = "Invalid email or password."
+                    account.status = AccountStatus.login_required
+                    db.commit()
+                return []
+            else:
+                print(f"[Login] Unexpected page: {current_url}")
+                return []
 
         await asyncio.sleep(3)
         cookies = await context.cookies()
         print(f"[Login] Success! Got {len(cookies)} cookies.")
+
+        # Clear any error and verification state
+        account = db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
+        if account:
+            account.verification_code = None
+            account.login_error = None
+            db.commit()
+
         return [
             {"name": c["name"], "value": c["value"], "domain": c["domain"], "path": c["path"]}
             for c in cookies
         ]
     except Exception as e:
         print(f"[Login] Failed: {e}")
+        account = db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
+        if account:
+            account.login_error = str(e)
+            db.commit()
         return []
     finally:
         await context.close()
@@ -461,11 +542,19 @@ def process_logins(db: Session, headless: bool):
             break
 
         password = settings.decrypt(account.encrypted_password)
-        cookies = asyncio.run(login_account(account.email, password, headless=headless))
+        try:
+            cookies = asyncio.run(login_account(account.email, password, account.id, db, headless=headless))
+        except Exception as e:
+            print(f"[Login] Account {account.email} login error: {e}")
+            account.login_error = str(e)
+            db.commit()
+            continue
 
         if cookies:
             account.session_cookies = json.dumps(cookies)
             account.status = AccountStatus.active
+            account.login_error = None
+            account.verification_code = None
             print(f"[Login] Account {account.email} is now active.")
         else:
             print(f"[Login] Account {account.email} login failed.")

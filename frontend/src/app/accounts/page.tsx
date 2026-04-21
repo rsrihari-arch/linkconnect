@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getAccounts, createAccount, createAccountWithCookies, deleteAccount } from "@/lib/api";
+import { getAccounts, createAccount, createAccountWithCookies, deleteAccount, loginAccount, submitVerificationCode } from "@/lib/api";
 
 type AddMethod = "cookies" | "password";
 
@@ -14,12 +14,50 @@ export default function AccountsPage() {
   const [cookies, setCookies] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [verifyCode, setVerifyCode] = useState<Record<number, string>>({});
+  const [verifyLoading, setVerifyLoading] = useState<number | null>(null);
+  const [loginLoading, setLoginLoading] = useState<number | null>(null);
 
   const fetchAccounts = () => getAccounts().then(setAccounts).catch(() => {});
 
   useEffect(() => {
     fetchAccounts();
   }, []);
+
+  // Auto-poll when any account is verifying or login_required
+  useEffect(() => {
+    const hasVerifying = accounts.some((a: any) => a.status === "verifying" || a.status === "login_required");
+    if (!hasVerifying) return;
+    const interval = setInterval(fetchAccounts, 5000);
+    return () => clearInterval(interval);
+  }, [accounts]);
+
+  const handleLogin = async (id: number) => {
+    setLoginLoading(id);
+    try {
+      await loginAccount(id);
+      fetchAccounts();
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setLoginLoading(null);
+    }
+  };
+
+  const handleVerifyCode = async (id: number) => {
+    const code = verifyCode[id]?.trim();
+    if (!code) return;
+    setVerifyLoading(id);
+    try {
+      await submitVerificationCode(id, code);
+      setVerifyCode((prev) => ({ ...prev, [id]: "" }));
+      fetchAccounts();
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setVerifyLoading(null);
+    }
+  };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -147,8 +185,14 @@ export default function AccountsPage() {
                   />
                 </div>
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-700">
-                  Note: Login via password requires running the automation worker locally to complete the LinkedIn login.
-                  The cookie method is recommended as it works instantly.
+                  <p className="font-semibold mb-1">How it works:</p>
+                  <ol className="list-decimal list-inside space-y-0.5">
+                    <li>Save your account with email &amp; password</li>
+                    <li>Click &quot;Login&quot; on the account row &mdash; the worker will attempt to log in</li>
+                    <li>LinkedIn will send a verification code to your email</li>
+                    <li>Enter the code in the input that appears next to the account</li>
+                    <li>Once verified, the account becomes active</li>
+                  </ol>
                 </div>
               </>
             )}
@@ -199,18 +243,57 @@ export default function AccountsPage() {
                       className={`px-2 py-1 rounded-full text-xs font-medium ${
                         a.status === "active"
                           ? "bg-green-100 text-green-700"
+                          : a.status === "verifying"
+                          ? "bg-amber-100 text-amber-700"
                           : a.status === "login_required"
                           ? "bg-orange-100 text-orange-700"
                           : "bg-slate-100 text-slate-600"
                       }`}
                     >
-                      {a.status === "active" ? "Active" : a.status === "login_required" ? "Login Required" : a.status}
+                      {a.status === "active"
+                        ? "Active"
+                        : a.status === "verifying"
+                        ? "Awaiting Code"
+                        : a.status === "login_required"
+                        ? "Login Required"
+                        : a.status}
                     </span>
+                    {a.login_error && (
+                      <p className="text-xs text-red-500 mt-1 max-w-xs">{a.login_error}</p>
+                    )}
+                    {a.status === "verifying" && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <input
+                          type="text"
+                          placeholder="Enter code"
+                          value={verifyCode[a.id] || ""}
+                          onChange={(e) => setVerifyCode((prev) => ({ ...prev, [a.id]: e.target.value }))}
+                          onKeyDown={(e) => e.key === "Enter" && handleVerifyCode(a.id)}
+                          className="border border-slate-300 rounded px-2 py-1 text-sm w-28 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                        />
+                        <button
+                          onClick={() => handleVerifyCode(a.id)}
+                          disabled={verifyLoading === a.id}
+                          className="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1 rounded text-xs font-medium disabled:opacity-50"
+                        >
+                          {verifyLoading === a.id ? "..." : "Verify"}
+                        </button>
+                      </div>
+                    )}
                   </td>
                   <td className="px-6 py-4 text-sm text-slate-500">
                     {new Date(a.created_at).toLocaleDateString()}
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-6 py-4 flex items-center gap-3">
+                    {a.status === "login_required" && (
+                      <button
+                        onClick={() => handleLogin(a.id)}
+                        disabled={loginLoading === a.id}
+                        className="text-sm text-green-600 hover:text-green-700 font-medium disabled:opacity-50"
+                      >
+                        {loginLoading === a.id ? "Starting..." : "Login"}
+                      </button>
+                    )}
                     <button
                       onClick={() => handleDelete(a.id)}
                       className="text-sm text-red-500 hover:text-red-600 font-medium"
