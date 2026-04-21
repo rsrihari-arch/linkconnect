@@ -149,23 +149,61 @@ async def send_connection_request(
 
     try:
         await page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
-        await asyncio.sleep(random.uniform(2, 5))
+        await asyncio.sleep(random.uniform(3, 6))
 
-        # Check if already connected
-        page_text = await page.text_content("body") or ""
-        if "Message" in page_text and "Following" in page_text:
+        # Get the topcard section (contains name, headline, action buttons)
+        top_card = page.locator('section[componentkey*="Topcard"]')
+        if await top_card.count() == 0:
+            # Fallback: first section inside main
+            top_card = page.locator('main section').first
+
+        # Check connection status from topcard text
+        top_text = await top_card.text_content() or ""
+        if "Pending" in top_text:
+            return {"status": "already_invited"}
+        if "· 1st" in top_text:
             return {"status": "already_connected"}
 
-        # Find the Connect button
-        connect_btn = await _find_connect_button(page)
+        # Strategy 1: Connect button inside the topcard (most precise)
+        connect_btn = await _find_connect_button_in(top_card)
 
+        # Strategy 2: aria-label selectors on page (exclude sidebar suggestions)
         if not connect_btn:
-            # Try the "More" dropdown
-            more_btn = page.locator('button:has-text("More")')
+            # Get the person's name from the topcard to match aria-label
+            name_el = top_card.locator('h1')
+            person_name = ""
+            if await name_el.count() > 0:
+                person_name = (await name_el.first.text_content() or "").strip()
+
+            if person_name:
+                # Look for "Invite <name> to connect" button
+                btn = page.locator(f'button[aria-label*="Invite {person_name}"]')
+                if await btn.count() > 0:
+                    connect_btn = btn.first
+
+        # Strategy 3: "More" dropdown in topcard
+        if not connect_btn:
+            more_btn = top_card.locator('button[aria-label="More"]')
             if await more_btn.count() > 0:
                 await more_btn.first.click()
-                await asyncio.sleep(1)
-                connect_btn = await _find_connect_button(page)
+                await asyncio.sleep(1.5)
+                # Look for Connect in the dropdown menu
+                menu_items = page.locator('[role="menu"] [role="menuitem"]')
+                count = await menu_items.count()
+                for i in range(count):
+                    item_text = (await menu_items.nth(i).text_content() or "").strip()
+                    if item_text.lower().startswith("connect"):
+                        await menu_items.nth(i).click()
+                        await asyncio.sleep(2)
+                        # This click may open a modal or send directly
+                        # Check for send button
+                        for send_sel in ['button[aria-label="Send invitation"]', 'button[aria-label="Send now"]', 'button:has-text("Send")']:
+                            send_btn = page.locator(send_sel)
+                            if await send_btn.count() > 0:
+                                await send_btn.first.click()
+                                await asyncio.sleep(2)
+                                return {"status": "sent"}
+                        return {"status": "sent"}  # Connect from menu often sends directly
 
         if not connect_btn:
             return {"status": "no_connect_button"}
@@ -173,27 +211,33 @@ async def send_connection_request(
         await connect_btn.click()
         await asyncio.sleep(2)
 
-        # Add a note if message template is provided
+        # Handle the connection modal
+        # Option 1: "Add a note" dialog appears
         if message:
             add_note_btn = page.locator('button:has-text("Add a note")')
             if await add_note_btn.count() > 0:
                 await add_note_btn.click()
                 await asyncio.sleep(1)
 
-                note_field = page.locator('textarea[name="message"]')
-                if await note_field.count() == 0:
-                    note_field = page.locator("#custom-message")
+                # Try multiple selectors for the note textarea
+                note_field = page.locator('textarea[name="message"], textarea#custom-message, textarea.connect-button-send-invite__custom-message')
                 if await note_field.count() > 0:
-                    await note_field.fill(message[:300])
+                    await note_field.first.fill(message[:300])
                     await asyncio.sleep(1)
 
-        # Click Send
-        send_btn = page.locator('button:has-text("Send")')
-        if await send_btn.count() > 0:
-            await send_btn.first.click()
-            await asyncio.sleep(2)
-            return {"status": "sent"}
+        # Click Send (try multiple selectors)
+        for send_selector in [
+            'button[aria-label="Send invitation"]',
+            'button[aria-label="Send now"]',
+            'button:has-text("Send")',
+        ]:
+            send_btn = page.locator(send_selector)
+            if await send_btn.count() > 0:
+                await send_btn.first.click()
+                await asyncio.sleep(2)
+                return {"status": "sent"}
 
+        # Try "Send without a note"
         send_now_btn = page.locator('button:has-text("Send without a note")')
         if await send_now_btn.count() > 0:
             await send_now_btn.click()
@@ -210,19 +254,14 @@ async def send_connection_request(
         await pw.stop()
 
 
-async def _find_connect_button(page):
-    selectors = [
-        'button:has-text("Connect")',
-        'button[aria-label*="connect" i]',
-        'button[aria-label*="Connect" i]',
-    ]
-    for selector in selectors:
-        btn = page.locator(selector)
-        count = await btn.count()
-        for i in range(count):
-            text = await btn.nth(i).text_content()
-            if text and "connect" in text.lower().strip() and "connected" not in text.lower():
-                return btn.nth(i)
+async def _find_connect_button_in(container):
+    """Find a Connect button within a specific container (e.g. topcard section)."""
+    btn = container.locator('button:has-text("Connect")')
+    count = await btn.count()
+    for i in range(count):
+        text = (await btn.nth(i).text_content() or "").strip()
+        if text.lower() == "connect":
+            return btn.nth(i)
     return None
 
 
@@ -343,6 +382,9 @@ def process_campaigns(db: Session, headless: bool):
             elif status == "already_connected":
                 lead.status = LeadStatus.connected
                 print(f"  [Lead] --> Already connected.")
+            elif status == "already_invited":
+                lead.status = LeadStatus.invited
+                print(f"  [Lead] --> Already invited (pending).")
             elif status in ("no_connect_button", "send_failed"):
                 if lead.retry_count >= 1:
                     lead.status = LeadStatus.skipped
