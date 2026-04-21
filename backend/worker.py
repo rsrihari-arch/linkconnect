@@ -164,22 +164,29 @@ async def send_connection_request(
         if "· 1st" in top_text:
             return {"status": "already_connected"}
 
-        # Strategy 1: Connect button inside the topcard (most precise)
-        connect_btn = await _find_connect_button_in(top_card)
+        # Strategy 1: Connect link/button in topcard (LinkedIn uses <a> tags for Connect)
+        connect_btn = None
+        connect_link = top_card.locator('a[href*="/preload/custom-invite/"]')
+        if await connect_link.count() > 0:
+            connect_btn = connect_link.first
 
-        # Strategy 2: aria-label selectors on page (exclude sidebar suggestions)
+        # Strategy 1b: Connect as a <button> inside the topcard
         if not connect_btn:
-            # Get the person's name from the topcard to match aria-label
+            connect_btn = await _find_connect_button_in(top_card)
+
+        # Strategy 2: aria-label selectors on page (match person's name)
+        if not connect_btn:
             name_el = top_card.locator('h1')
             person_name = ""
             if await name_el.count() > 0:
                 person_name = (await name_el.first.text_content() or "").strip()
 
             if person_name:
-                # Look for "Invite <name> to connect" button
-                btn = page.locator(f'button[aria-label*="Invite {person_name}"]')
-                if await btn.count() > 0:
-                    connect_btn = btn.first
+                for sel in [f'button[aria-label*="Invite {person_name}"]', f'a[aria-label*="Invite {person_name}"]']:
+                    btn = page.locator(sel)
+                    if await btn.count() > 0:
+                        connect_btn = btn.first
+                        break
 
         # Strategy 3: "More" dropdown in topcard
         if not connect_btn:
@@ -209,21 +216,28 @@ async def send_connection_request(
             return {"status": "no_connect_button"}
 
         await connect_btn.click()
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
 
-        # Handle the connection modal
-        # Option 1: "Add a note" dialog appears
+        # LinkedIn may navigate to /preload/custom-invite/ page or show a modal
+        # Handle the invitation page/modal
         if message:
-            add_note_btn = page.locator('button:has-text("Add a note")')
-            if await add_note_btn.count() > 0:
-                await add_note_btn.click()
-                await asyncio.sleep(1)
-
-                # Try multiple selectors for the note textarea
-                note_field = page.locator('textarea[name="message"], textarea#custom-message, textarea.connect-button-send-invite__custom-message')
-                if await note_field.count() > 0:
-                    await note_field.first.fill(message[:300])
+            # Try to find and fill message/note field
+            note_field = page.locator('textarea[name="message"], textarea#custom-message, textarea.connect-button-send-invite__custom-message, textarea')
+            if await note_field.count() > 0:
+                first_textarea = note_field.first
+                if await first_textarea.is_visible():
+                    await first_textarea.fill(message[:300])
                     await asyncio.sleep(1)
+            else:
+                # Try "Add a note" button first
+                add_note_btn = page.locator('button:has-text("Add a note")')
+                if await add_note_btn.count() > 0:
+                    await add_note_btn.click()
+                    await asyncio.sleep(1)
+                    note_field = page.locator('textarea')
+                    if await note_field.count() > 0:
+                        await note_field.first.fill(message[:300])
+                        await asyncio.sleep(1)
 
         # Click Send (try multiple selectors)
         for send_selector in [
