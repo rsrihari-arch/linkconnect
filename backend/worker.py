@@ -169,10 +169,13 @@ async def login_account(email: str, password: str, account_id: int, db: Session,
 
     try:
         await page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_selector("#username", timeout=15000)
-        await page.fill("#username", email)
+        await asyncio.sleep(3)
+        # Try both selectors LinkedIn uses for the email/phone field
+        username_sel = 'input#username, input[name="session_key"], input[autocomplete="username"]'
+        await page.wait_for_selector(username_sel, timeout=30000)
+        await page.fill(username_sel, email)
         await asyncio.sleep(random.uniform(0.5, 1.5))
-        await page.fill("#password", password)
+        await page.fill('input#password, input[name="session_password"]', password)
         await asyncio.sleep(random.uniform(0.5, 1.5))
         await page.click('button[type="submit"]')
 
@@ -196,13 +199,33 @@ async def login_account(email: str, password: str, account_id: int, db: Session,
                 # Look for the code input field on the page
                 code_input = page.locator('input[name="pin"], input#input__email_verification_pin, input[name="code"]')
 
-                # Poll the database for up to 3 minutes waiting for the user to submit the code
-                print(f"[Login] Waiting for verification code (up to 3 minutes)...")
+                # Poll for up to 10 minutes: check for user-submitted code OR app-confirmation redirect
+                print(f"[Login] Waiting for verification (code or app confirmation) for up to 10 minutes...")
                 code = None
-                for _ in range(36):  # 36 * 5 seconds = 3 minutes
+                for _ in range(120):  # 120 * 5 seconds = 10 minutes
                     if shutdown_requested:
                         return []
                     await asyncio.sleep(5)
+
+                    # Reload page to check if app confirmation was accepted
+                    try:
+                        await page.reload(wait_until="domcontentloaded", timeout=10000)
+                    except Exception:
+                        pass
+
+                    # Check if LinkedIn already redirected us (app confirmation tapped)
+                    current = page.url
+                    if "feed" in current or ("linkedin.com" in current and "checkpoint" not in current and "challenge" not in current and "verify" not in current):
+                        print(f"[Login] App confirmation detected — page moved to {current}")
+                        cookies = await context.cookies()
+                        print(f"[Login] Success via app confirmation! Got {len(cookies)} cookies.")
+                        account = db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
+                        if account:
+                            account.verification_code = None
+                            account.login_error = None
+                            db.commit()
+                        return cookies
+
                     db.expire_all()
                     account = db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
                     if account and account.verification_code:
@@ -211,9 +234,9 @@ async def login_account(email: str, password: str, account_id: int, db: Session,
                         break
 
                 if not code:
-                    print(f"[Login] Timed out waiting for verification code.")
+                    print(f"[Login] Timed out waiting for verification.")
                     if account:
-                        account.login_error = "Verification code timed out. Please try logging in again."
+                        account.login_error = "Verification timed out. Please try logging in again."
                         account.status = AccountStatus.login_required
                         db.commit()
                     return []
@@ -461,15 +484,25 @@ async def send_linkedin_message(
             top_card = page.locator('main section').first
 
         msg_btn = None
-        # Try link first (LinkedIn uses <a> tags)
-        msg_link = top_card.locator('a:has-text("Message")')
-        if await msg_link.count() > 0:
-            msg_btn = msg_link.first
-        else:
-            # Try button
-            msg_button = top_card.locator('button:has-text("Message")')
-            if await msg_button.count() > 0:
-                msg_btn = msg_button.first
+        # Try multiple selectors — LinkedIn uses both <a> and <button> for Message
+        for sel in [
+            'a:has-text("Message")',
+            'button:has-text("Message")',
+            'a[href*="/messaging/"]',
+            '[aria-label*="Message"]',
+        ]:
+            el = page.locator(sel).first
+            if await el.count() > 0:
+                msg_btn = el
+                break
+
+        # Also try searching outside topcard (full page)
+        if not msg_btn:
+            for sel in ['a:has-text("Message")', 'button:has-text("Message")', '[aria-label*="Message"]']:
+                el = page.locator(sel).first
+                if await el.count() > 0:
+                    msg_btn = el
+                    break
 
         if not msg_btn:
             return {"status": "no_message_button"}
@@ -531,7 +564,16 @@ async def check_connection_accepted(
             top_card = page.locator('main section').first
 
         top_text = await top_card.text_content() or ""
-        return "· 1st" in top_text
+
+        # Must show "· 1st" (connected) AND NOT show "Pending" (still waiting)
+        is_first = "· 1st" in top_text
+        is_pending = "Pending" in top_text or "pending" in top_text.lower()
+
+        # Also check for "Message" button — only appears after connection accepted
+        msg_btn = top_card.locator('a:has-text("Message"), button:has-text("Message")')
+        has_message_btn = await msg_btn.count() > 0
+
+        return is_first and not is_pending and has_message_btn
     except Exception:
         return False
     finally:
@@ -726,12 +768,9 @@ def process_connection_checks(db: Session, headless: bool):
         if shutdown_requested:
             break
 
-        # Only check campaigns that have follow-up steps
         steps = db.execute(
             select(FollowUpStep).where(FollowUpStep.campaign_id == campaign.id)
         ).scalars().all()
-        if not steps:
-            continue
 
         account = db.execute(
             select(Account).where(Account.id == campaign.account_id)
@@ -808,14 +847,19 @@ def process_followups(db: Session, headless: bool):
 
         cookies = json.loads(account.session_cookies)
 
-        # Find connected leads
+        # Find connected leads (include those with NULL connected_at — backfill below)
         connected_leads = db.execute(
             select(Lead).where(
                 Lead.campaign_id == campaign.id,
                 Lead.status == LeadStatus.connected,
-                Lead.connected_at.isnot(None),
             )
         ).scalars().all()
+
+        # Backfill connected_at for leads that were connected before the column existed
+        for lead in connected_leads:
+            if lead.connected_at is None:
+                lead.connected_at = lead.last_action_at or datetime.datetime.utcnow()
+                db.commit()
 
         if not connected_leads:
             continue
@@ -885,6 +929,7 @@ def process_followups(db: Session, headless: bool):
 
 def run_once(headless: bool = True):
     """Run one cycle: process logins, campaigns, connection checks, follow-ups."""
+    engine.dispose()  # Discard stale pooled connections before each cycle
     db = SessionLocal()
     try:
         print("\n" + "=" * 60)
