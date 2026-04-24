@@ -95,6 +95,12 @@ export const startCampaign = (id: number) =>
 export const stopCampaign = (id: number) =>
   request(`/api/campaigns/${id}/stop`, { method: "POST" });
 
+export const pauseCampaign = (id: number) =>
+  request(`/api/campaigns/${id}/pause`, { method: "POST" });
+
+export const resumeCampaign = (id: number) =>
+  request(`/api/campaigns/${id}/resume`, { method: "POST" });
+
 export const deleteCampaign = (id: number) =>
   request(`/api/campaigns/${id}`, { method: "DELETE" });
 

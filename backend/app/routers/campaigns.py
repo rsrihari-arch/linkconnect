@@ -149,6 +149,34 @@ def stop_campaign(campaign_id: int, db: Session = Depends(get_db), user: User = 
     return {"message": "Campaign stopped", "campaign_id": campaign_id}
 
 
+@router.post("/{campaign_id}/pause")
+def pause_campaign(campaign_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    campaign = db.execute(
+        select(Campaign).where(Campaign.id == campaign_id, Campaign.user_id == user.id)
+    ).scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.status != CampaignStatus.active:
+        raise HTTPException(status_code=400, detail="Only active campaigns can be paused")
+    campaign.status = CampaignStatus.paused
+    db.commit()
+    return {"message": "Campaign paused", "campaign_id": campaign_id}
+
+
+@router.post("/{campaign_id}/resume")
+def resume_campaign(campaign_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    campaign = db.execute(
+        select(Campaign).where(Campaign.id == campaign_id, Campaign.user_id == user.id)
+    ).scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.status != CampaignStatus.paused:
+        raise HTTPException(status_code=400, detail="Only paused campaigns can be resumed")
+    campaign.status = CampaignStatus.active
+    db.commit()
+    return {"message": "Campaign resumed", "campaign_id": campaign_id}
+
+
 @router.delete("/{campaign_id}")
 def delete_campaign(campaign_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     campaign = db.execute(

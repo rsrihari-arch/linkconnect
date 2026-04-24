@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getCampaigns, createCampaign, startCampaign, stopCampaign, deleteCampaign, getAccounts } from "@/lib/api";
+import { getCampaigns, createCampaign, startCampaign, stopCampaign, pauseCampaign, resumeCampaign, deleteCampaign, getAccounts } from "@/lib/api";
 import Link from "next/link";
 
 export default function CampaignsPage() {
@@ -59,6 +59,24 @@ export default function CampaignsPage() {
     }
   };
 
+  const handlePause = async (id: number) => {
+    try {
+      await pauseCampaign(id);
+      fetchData();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const handleResume = async (id: number) => {
+    try {
+      await resumeCampaign(id);
+      fetchData();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
   const handleDelete = async (id: number) => {
     if (!confirm("Delete this campaign and all its leads?")) return;
     try {
@@ -75,9 +93,10 @@ export default function CampaignsPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Campaigns</h1>
           <p className="text-sm text-slate-500 mt-1">
-            <span className="inline-block w-3 h-3 rounded-full bg-blue-500 mr-1 align-middle"></span> Running
-            <span className="inline-block w-3 h-3 rounded-full bg-green-500 mr-1 ml-4 align-middle"></span> Active
+            <span className="inline-block w-3 h-3 rounded-full bg-green-500 mr-1 align-middle"></span> Active
+            <span className="inline-block w-3 h-3 rounded-full bg-yellow-400 mr-1 ml-4 align-middle"></span> Paused
             <span className="inline-block w-3 h-3 rounded-full bg-red-500 mr-1 ml-4 align-middle"></span> Stopped
+            <span className="inline-block w-3 h-3 rounded-full bg-blue-500 mr-1 ml-4 align-middle"></span> Completed
           </p>
         </div>
         <button
@@ -188,9 +207,12 @@ export default function CampaignsPage() {
                     <td className="px-6 py-4">
                       <span
                         className={`inline-block w-3 h-3 rounded-full ${
-                          c.status === "active" ? "bg-green-500" : c.status === "completed" ? "bg-blue-500" : "bg-red-500"
+                          c.status === "active" ? "bg-green-500" :
+                          c.status === "paused" ? "bg-yellow-400" :
+                          c.status === "completed" ? "bg-blue-500" : "bg-red-500"
                         }`}
                       ></span>
+                      <span className="text-xs text-slate-500 ml-1 capitalize">{c.status}</span>
                     </td>
                     <td className="px-6 py-4">
                       <Link href={`/campaigns/${c.id}`} className="text-sm font-medium text-slate-700 hover:text-green-600">
@@ -211,15 +233,31 @@ export default function CampaignsPage() {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex gap-2">
-                        {c.status === "active" ? (
-                          <button onClick={() => handleStop(c.id)} className="text-sm text-orange-600 hover:text-orange-700 font-medium">
-                            Stop
-                          </button>
-                        ) : c.status !== "completed" ? (
+                        {c.status === "active" && (
+                          <>
+                            <button onClick={() => handlePause(c.id)} className="text-sm text-yellow-600 hover:text-yellow-700 font-medium">
+                              Pause
+                            </button>
+                            <button onClick={() => handleStop(c.id)} className="text-sm text-red-500 hover:text-red-600 font-medium">
+                              Stop
+                            </button>
+                          </>
+                        )}
+                        {c.status === "paused" && (
+                          <>
+                            <button onClick={() => handleResume(c.id)} className="text-sm text-green-600 hover:text-green-700 font-medium">
+                              Resume
+                            </button>
+                            <button onClick={() => handleStop(c.id)} className="text-sm text-red-500 hover:text-red-600 font-medium">
+                              Stop
+                            </button>
+                          </>
+                        )}
+                        {(c.status === "stopped" || c.status === "completed") && (
                           <button onClick={() => handleStart(c.id)} className="text-sm text-green-600 hover:text-green-700 font-medium">
                             Start
                           </button>
-                        ) : null}
+                        )}
                         <Link href={`/campaigns/${c.id}`} className="text-sm text-blue-600 hover:text-blue-700 font-medium">
                           View
                         </Link>
