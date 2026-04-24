@@ -929,8 +929,10 @@ def process_followups(db: Session, headless: bool):
 
 def run_once(headless: bool = True):
     """Run one cycle: process logins, campaigns, connection checks, follow-ups."""
-    engine.dispose()  # Discard stale pooled connections before each cycle
-    db = SessionLocal()
+    # Create a fresh engine + session each cycle to avoid Neon idle connection drops
+    fresh_engine = get_engine()
+    fresh_session = sessionmaker(bind=fresh_engine)
+    db = fresh_session()
     try:
         print("\n" + "=" * 60)
         print(f"[Worker] Starting cycle at {datetime.datetime.utcnow().isoformat()}")
@@ -944,6 +946,7 @@ def run_once(headless: bool = True):
         print(f"\n[Worker] Cycle complete.")
     finally:
         db.close()
+        fresh_engine.dispose()
 
 
 def run_loop(interval_minutes: int = 5, headless: bool = True):
