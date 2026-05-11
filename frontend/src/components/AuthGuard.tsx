@@ -2,7 +2,17 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import { getMe } from "@/lib/api";
+
+function isTokenValid(token: string): boolean {
+  try {
+    // Our JWT format: base64(payload).signature
+    const [data] = token.split(".");
+    const payload = JSON.parse(atob(data));
+    return new Date(payload.exp) > new Date();
+  } catch {
+    return false;
+  }
+}
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -13,25 +23,20 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (pathname === "/login") {
       setChecked(true);
-      setAuthed(true); // Don't guard the login page
+      setAuthed(true);
       return;
     }
 
     const token = localStorage.getItem("token");
-    if (!token) {
+    if (!token || !isTokenValid(token)) {
+      localStorage.removeItem("token");
       router.replace("/login");
       return;
     }
 
-    getMe()
-      .then(() => {
-        setAuthed(true);
-        setChecked(true);
-      })
-      .catch(() => {
-        localStorage.removeItem("token");
-        router.replace("/login");
-      });
+    // Token is valid — show content immediately without an API round-trip
+    setAuthed(true);
+    setChecked(true);
   }, [pathname, router]);
 
   if (!checked || !authed) {

@@ -26,7 +26,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 def create_token(user_id: int) -> str:
     payload = {
         "user_id": user_id,
-        "exp": (datetime.datetime.utcnow() + datetime.timedelta(days=30)).isoformat(),
+        "exp": (datetime.datetime.utcnow() + datetime.timedelta(days=90)).isoformat(),
     }
     data = base64.b64encode(json.dumps(payload).encode()).decode()
     sig = hmac.new(settings.secret_key.encode(), data.encode(), hashlib.sha256).hexdigest()

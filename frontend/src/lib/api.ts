@@ -28,11 +28,13 @@ async function request(path: string, options?: RequestInit) {
     headers,
   });
   if (res.status === 401) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
     clearToken();
-    if (typeof window !== "undefined") {
+    // Only redirect to login if we're NOT already on the login page
+    if (typeof window !== "undefined" && window.location.pathname !== "/login") {
       window.location.href = "/login";
     }
-    throw new Error("Session expired");
+    throw new Error(error.detail || "Session expired");
   }
   if (!res.ok) {
     const error = await res.json().catch(() => ({ detail: res.statusText }));
@@ -71,6 +73,9 @@ export const getAccount = (id: number) =>
 export const submitVerificationCode = (id: number, code: string) =>
   request(`/api/accounts/${id}/verify-code`, { method: "POST", body: JSON.stringify({ code }) });
 
+export const refreshAccountCookies = (id: number, email: string, cookies: string) =>
+  request(`/api/accounts/${id}/refresh-cookies`, { method: "POST", body: JSON.stringify({ email, cookies }) });
+
 export const deleteAccount = (id: number) =>
   request(`/api/accounts/${id}`, { method: "DELETE" });
 
@@ -103,6 +108,9 @@ export const resumeCampaign = (id: number) =>
 
 export const deleteCampaign = (id: number) =>
   request(`/api/campaigns/${id}`, { method: "DELETE" });
+
+export const resetFailedLeads = (id: number) =>
+  request(`/api/campaigns/${id}/reset-failed-leads`, { method: "POST" });
 
 // Leads
 export const uploadLeads = async (campaignId: number, file: File) => {

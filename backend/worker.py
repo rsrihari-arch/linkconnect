@@ -63,7 +63,7 @@ with engine.connect() as conn:
         conn.commit()
     except Exception:
         conn.rollback()
-    for col, coltype in [("verification_code", "VARCHAR(20)"), ("login_error", "TEXT")]:
+    for col, coltype in [("verification_code", "VARCHAR(20)"), ("login_error", "TEXT"), ("login_triggered", "BOOLEAN DEFAULT FALSE")]:
         try:
             conn.execute(text(f"ALTER TABLE accounts ADD COLUMN IF NOT EXISTS {col} {coltype}"))
             conn.commit()
@@ -158,6 +158,12 @@ async def create_stealth_context(pw, cookies: Optional[List[dict]] = None, headl
 
 # --- LinkedIn Automation ---
 
+def _fresh_db_session():
+    """Create a fresh DB session to avoid Neon idle connection drops during long waits."""
+    fresh_engine = get_engine()
+    return sessionmaker(bind=fresh_engine)(), fresh_engine
+
+
 async def login_account(email: str, password: str, account_id: int, db: Session, headless: bool = True) -> List[dict]:
     """Login to LinkedIn. If verification is needed, waits for user to submit code via the platform."""
     from playwright.async_api import async_playwright
@@ -171,12 +177,24 @@ async def login_account(email: str, password: str, account_id: int, db: Session,
         await page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded", timeout=60000)
         await asyncio.sleep(3)
         # Try both selectors LinkedIn uses for the email/phone field
-        username_sel = 'input#username, input[name="session_key"], input[autocomplete="username"]'
-        await page.wait_for_selector(username_sel, timeout=30000)
-        await page.fill(username_sel, email)
+        # LinkedIn renders two sets of inputs — only the visible ones work
+        # Wait for visible email input
+        await page.wait_for_selector('input[type="email"]:visible, input[autocomplete="username webauthn"]:visible', timeout=30000)
+        await asyncio.sleep(1)
+
+        # Fill the visible email input
+        email_input = page.locator('input[type="email"]:visible').first
+        await email_input.click()
+        await email_input.fill(email)
         await asyncio.sleep(random.uniform(0.5, 1.5))
-        await page.fill('input#password, input[name="session_password"]', password)
+
+        # Fill the visible password input
+        pw_input = page.locator('input[type="password"]:visible').first
+        await pw_input.click()
+        await pw_input.fill(password)
         await asyncio.sleep(random.uniform(0.5, 1.5))
+
+        # Click the sign in button
         await page.click('button[type="submit"]')
 
         # Wait for redirect to feed
@@ -188,50 +206,82 @@ async def login_account(email: str, password: str, account_id: int, db: Session,
             if "challenge" in current_url or "checkpoint" in current_url or "verify" in current_url:
                 print(f"[Login] Verification required at {current_url}")
 
-                # Mark account as "verifying" so frontend shows code input
+                # Detect hard LinkedIn blocks — retrying makes it worse
+                if "challenge_global_internal_error" in current_url or "challenge_global" in current_url:
+                    print(f"[Login] LinkedIn blocked this login (challenge error). User must log in manually first.")
+                    account = db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
+                    if account:
+                        account.status = AccountStatus.login_required
+                        account.login_error = "LinkedIn blocked automated login. Please log into LinkedIn manually in your browser first, then try again here."
+                        db.commit()
+                    return []
+
+                # Check if user already submitted a code before this attempt
                 account = db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
+                pre_submitted_code = account.verification_code if account else None
+
+                # Mark account as "verifying" so frontend shows code input
                 if account:
                     account.status = AccountStatus.verifying
-                    account.login_error = "LinkedIn sent a verification code to your email. Please enter it on the platform."
-                    account.verification_code = None
+                    account.login_error = "LinkedIn sent a verification code to your email/phone. Please enter it below."
+                    if not pre_submitted_code:
+                        account.verification_code = None
                     db.commit()
 
                 # Look for the code input field on the page
                 code_input = page.locator('input[name="pin"], input#input__email_verification_pin, input[name="code"]')
 
-                # Poll for up to 10 minutes: check for user-submitted code OR app-confirmation redirect
-                print(f"[Login] Waiting for verification (code or app confirmation) for up to 10 minutes...")
-                code = None
-                for _ in range(120):  # 120 * 5 seconds = 10 minutes
+                # Poll for up to 20 minutes: check for user-submitted code OR app-confirmation redirect
+                print(f"[Login] Waiting for verification (code or app confirmation) for up to 20 minutes...")
+                code = pre_submitted_code  # None if user hasn't submitted yet
+                if code:
+                    print(f"[Login] Found pre-submitted code from user, will use it immediately.")
+                for _ in range(240):  # 240 * 5 seconds = 20 minutes
                     if shutdown_requested:
                         return []
-                    await asyncio.sleep(5)
 
-                    # Reload page to check if app confirmation was accepted
-                    try:
-                        await page.reload(wait_until="domcontentloaded", timeout=10000)
-                    except Exception:
-                        pass
+                    # If we already have a code, skip the wait and go use it
+                    if not code:
+                        await asyncio.sleep(5)
 
-                    # Check if LinkedIn already redirected us (app confirmation tapped)
-                    current = page.url
-                    if "feed" in current or ("linkedin.com" in current and "checkpoint" not in current and "challenge" not in current and "verify" not in current):
-                        print(f"[Login] App confirmation detected — page moved to {current}")
-                        cookies = await context.cookies()
-                        print(f"[Login] Success via app confirmation! Got {len(cookies)} cookies.")
-                        account = db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
-                        if account:
-                            account.verification_code = None
-                            account.login_error = None
-                            db.commit()
-                        return cookies
+                        # Reload page to check if app confirmation was accepted
+                        try:
+                            await page.reload(wait_until="domcontentloaded", timeout=10000)
+                        except Exception:
+                            pass
 
-                    db.expire_all()
-                    account = db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
-                    if account and account.verification_code:
-                        code = account.verification_code
-                        print(f"[Login] Got verification code from user.")
-                        break
+                        # Check if LinkedIn already redirected us (app confirmation tapped)
+                        current = page.url
+                        if "feed" in current or ("linkedin.com" in current and "checkpoint" not in current and "challenge" not in current and "verify" not in current):
+                            print(f"[Login] App confirmation detected — page moved to {current}")
+                            cookies = await context.cookies()
+                            print(f"[Login] Success via app confirmation! Got {len(cookies)} cookies.")
+                            try:
+                                fresh_db, fresh_eng = _fresh_db_session()
+                                account = fresh_db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
+                                if account:
+                                    account.verification_code = None
+                                    account.login_error = None
+                                    fresh_db.commit()
+                                fresh_db.close(); fresh_eng.dispose()
+                            except Exception:
+                                pass
+                            return cookies
+
+                        # Use a fresh DB connection to avoid Neon idle timeout
+                        try:
+                            fresh_db, fresh_eng = _fresh_db_session()
+                            account = fresh_db.execute(select(Account).where(Account.id == account_id)).scalar_one_or_none()
+                            if account and account.verification_code:
+                                code = account.verification_code
+                                print(f"[Login] Got verification code from user.")
+                                fresh_db.close(); fresh_eng.dispose()
+                                break
+                            fresh_db.close(); fresh_eng.dispose()
+                        except Exception as db_err:
+                            print(f"[Login] DB poll error (will retry): {db_err}")
+                    else:
+                        break  # Have a code — exit loop to use it
 
                 if not code:
                     print(f"[Login] Timed out waiting for verification.")
@@ -324,43 +374,45 @@ async def send_connection_request(
     pw = await async_playwright().start()
     browser, context = await create_stealth_context(pw, cookies=cookies, headless=headless)
     page = await context.new_page()
+    result = {"status": "unknown"}
 
     try:
         await page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
         await asyncio.sleep(random.uniform(3, 7))
+
+        if "authwall" in page.url or ("/login" in page.url and "linkedin.com" in page.url):
+            print(f"  [Session] Expired — redirected to {page.url}")
+            result = {"status": "session_expired"}
+            return result
+
         await human_like_scroll(page)
         await asyncio.sleep(random.uniform(1, 3))
 
-        # Get the topcard section (contains name, headline, action buttons)
         top_card = page.locator('section[componentkey*="Topcard"]')
         if await top_card.count() == 0:
-            # Fallback: first section inside main
             top_card = page.locator('main section').first
 
-        # Check connection status from topcard text
         top_text = await top_card.text_content() or ""
         if "Pending" in top_text:
-            return {"status": "already_invited"}
+            result = {"status": "already_invited"}
+            return result
         if "· 1st" in top_text:
-            return {"status": "already_connected"}
+            result = {"status": "already_connected"}
+            return result
 
-        # Strategy 1: Connect link/button in topcard (LinkedIn uses <a> tags for Connect)
         connect_btn = None
         connect_link = top_card.locator('a[href*="/preload/custom-invite/"]')
         if await connect_link.count() > 0:
             connect_btn = connect_link.first
 
-        # Strategy 1b: Connect as a <button> inside the topcard
         if not connect_btn:
             connect_btn = await _find_connect_button_in(top_card)
 
-        # Strategy 2: aria-label selectors on page (match person's name)
         if not connect_btn:
             name_el = top_card.locator('h1')
             person_name = ""
             if await name_el.count() > 0:
                 person_name = (await name_el.first.text_content() or "").strip()
-
             if person_name:
                 for sel in [f'button[aria-label*="Invite {person_name}"]', f'a[aria-label*="Invite {person_name}"]']:
                     btn = page.locator(sel)
@@ -368,13 +420,13 @@ async def send_connection_request(
                         connect_btn = btn.first
                         break
 
-        # Strategy 3: "More" dropdown in topcard
         if not connect_btn:
             more_btn = top_card.locator('button[aria-label="More"]')
             if await more_btn.count() > 0:
-                await more_btn.first.click()
+                await more_btn.first.scroll_into_view_if_needed()
+                await asyncio.sleep(0.5)
+                await more_btn.first.click(force=True)
                 await asyncio.sleep(1.5)
-                # Look for Connect in the dropdown menu
                 menu_items = page.locator('[role="menu"] [role="menuitem"]')
                 count = await menu_items.count()
                 for i in range(count):
@@ -382,26 +434,24 @@ async def send_connection_request(
                     if item_text.lower().startswith("connect"):
                         await menu_items.nth(i).click()
                         await asyncio.sleep(2)
-                        # This click may open a modal or send directly
-                        # Check for send button
                         for send_sel in ['button[aria-label="Send invitation"]', 'button[aria-label="Send now"]', 'button:has-text("Send")']:
                             send_btn = page.locator(send_sel)
                             if await send_btn.count() > 0:
                                 await send_btn.first.click()
                                 await asyncio.sleep(2)
-                                return {"status": "sent"}
-                        return {"status": "sent"}  # Connect from menu often sends directly
+                                result = {"status": "sent"}
+                                return result
+                        result = {"status": "sent"}
+                        return result
 
         if not connect_btn:
-            return {"status": "no_connect_button"}
+            result = {"status": "no_connect_button"}
+            return result
 
         await connect_btn.click()
         await asyncio.sleep(3)
 
-        # LinkedIn may navigate to /preload/custom-invite/ page or show a modal
-        # Handle the invitation page/modal
         if message:
-            # Try to find and fill message/note field
             note_field = page.locator('textarea[name="message"], textarea#custom-message, textarea.connect-button-send-invite__custom-message, textarea')
             if await note_field.count() > 0:
                 first_textarea = note_field.first
@@ -409,7 +459,6 @@ async def send_connection_request(
                     await first_textarea.fill(message[:300])
                     await asyncio.sleep(1)
             else:
-                # Try "Add a note" button first
                 add_note_btn = page.locator('button:has-text("Add a note")')
                 if await add_note_btn.count() > 0:
                     await add_note_btn.click()
@@ -419,30 +468,39 @@ async def send_connection_request(
                         await note_field.first.fill(message[:300])
                         await asyncio.sleep(1)
 
-        # Click Send (try multiple selectors)
-        for send_selector in [
-            'button[aria-label="Send invitation"]',
-            'button[aria-label="Send now"]',
-            'button:has-text("Send")',
-        ]:
+        for send_selector in ['button[aria-label="Send invitation"]', 'button[aria-label="Send now"]', 'button:has-text("Send")']:
             send_btn = page.locator(send_selector)
             if await send_btn.count() > 0:
                 await send_btn.first.click()
                 await asyncio.sleep(2)
-                return {"status": "sent"}
+                result = {"status": "sent"}
+                return result
 
-        # Try "Send without a note"
         send_now_btn = page.locator('button:has-text("Send without a note")')
         if await send_now_btn.count() > 0:
             await send_now_btn.click()
             await asyncio.sleep(2)
-            return {"status": "sent"}
+            result = {"status": "sent"}
+            return result
 
-        return {"status": "send_failed"}
+        result = {"status": "send_failed"}
+        return result
 
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        result = {"status": "error", "error": str(e)}
+        return result
     finally:
+        # Save refreshed cookies back — LinkedIn rotates them on every request
+        if result.get("status") not in ("session_expired", "error"):
+            try:
+                fresh = await context.cookies()
+                if fresh:
+                    result["updated_cookies"] = [
+                        {"name": c["name"], "value": c["value"], "domain": c["domain"], "path": c["path"]}
+                        for c in fresh if "linkedin.com" in c.get("domain", "")
+                    ]
+            except Exception:
+                pass
         await context.close()
         await browser.close()
         await pw.stop()
@@ -471,32 +529,31 @@ async def send_linkedin_message(
     pw = await async_playwright().start()
     browser, context = await create_stealth_context(pw, cookies=cookies, headless=headless)
     page = await context.new_page()
+    result = {"status": "unknown"}
 
     try:
         await page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
         await asyncio.sleep(random.uniform(3, 7))
+
+        if "authwall" in page.url or ("/login" in page.url and "linkedin.com" in page.url):
+            print(f"  [Session] Expired — redirected to {page.url}")
+            result = {"status": "session_expired"}
+            return result
+
         await human_like_scroll(page)
         await asyncio.sleep(random.uniform(1, 3))
 
-        # Find Message button in topcard
         top_card = page.locator('section[componentkey*="Topcard"]')
         if await top_card.count() == 0:
             top_card = page.locator('main section').first
 
         msg_btn = None
-        # Try multiple selectors — LinkedIn uses both <a> and <button> for Message
-        for sel in [
-            'a:has-text("Message")',
-            'button:has-text("Message")',
-            'a[href*="/messaging/"]',
-            '[aria-label*="Message"]',
-        ]:
+        for sel in ['a:has-text("Message")', 'button:has-text("Message")', 'a[href*="/messaging/"]', '[aria-label*="Message"]']:
             el = page.locator(sel).first
             if await el.count() > 0:
                 msg_btn = el
                 break
 
-        # Also try searching outside topcard (full page)
         if not msg_btn:
             for sel in ['a:has-text("Message")', 'button:has-text("Message")', '[aria-label*="Message"]']:
                 el = page.locator(sel).first
@@ -505,39 +562,51 @@ async def send_linkedin_message(
                     break
 
         if not msg_btn:
-            return {"status": "no_message_button"}
+            print(f"  [Message] No Message button found. URL: {page.url}")
+            result = {"status": "no_message_button"}
+            return result
 
         await msg_btn.click()
         await asyncio.sleep(3)
 
-        # Find the message input in the messaging overlay/panel
         msg_input = page.locator('div[role="textbox"][contenteditable="true"]')
         if await msg_input.count() == 0:
-            # Try textarea fallback
             msg_input = page.locator('textarea[name="message"]')
         if await msg_input.count() == 0:
-            return {"status": "no_message_input"}
+            result = {"status": "no_message_input"}
+            return result
 
         await msg_input.first.click()
         await asyncio.sleep(0.5)
         await msg_input.first.fill(message)
         await asyncio.sleep(1)
 
-        # Click Send
         send_btn = page.locator('button[type="submit"]:has-text("Send"), button.msg-form__send-button, button[aria-label="Send"]')
         if await send_btn.count() > 0:
             await send_btn.first.click()
             await asyncio.sleep(2)
-            return {"status": "sent"}
+            result = {"status": "sent"}
+            return result
 
-        # Fallback: press Enter
         await msg_input.first.press("Enter")
         await asyncio.sleep(2)
-        return {"status": "sent"}
+        result = {"status": "sent"}
+        return result
 
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        result = {"status": "error", "error": str(e)}
+        return result
     finally:
+        if result.get("status") not in ("session_expired", "error"):
+            try:
+                fresh = await context.cookies()
+                if fresh:
+                    result["updated_cookies"] = [
+                        {"name": c["name"], "value": c["value"], "domain": c["domain"], "path": c["path"]}
+                        for c in fresh if "linkedin.com" in c.get("domain", "")
+                    ]
+            except Exception:
+                pass
         await context.close()
         await browser.close()
         await pw.stop()
@@ -547,36 +616,50 @@ async def check_connection_accepted(
     cookies: List[dict],
     profile_url: str,
     headless: bool = True,
-) -> bool:
+) -> dict:
     """Check if a previously invited person has accepted the connection."""
     from playwright.async_api import async_playwright
 
     pw = await async_playwright().start()
     browser, context = await create_stealth_context(pw, cookies=cookies, headless=headless)
     page = await context.new_page()
+    result = {"accepted": False}
 
     try:
         await page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
         await asyncio.sleep(random.uniform(3, 5))
+
+        if "authwall" in page.url or ("/login" in page.url and "linkedin.com" in page.url):
+            print(f"  [Session] Expired — redirected to {page.url}")
+            result = {"accepted": False, "session_expired": True}
+            return result
 
         top_card = page.locator('section[componentkey*="Topcard"]')
         if await top_card.count() == 0:
             top_card = page.locator('main section').first
 
         top_text = await top_card.text_content() or ""
-
-        # Must show "· 1st" (connected) AND NOT show "Pending" (still waiting)
         is_first = "· 1st" in top_text
         is_pending = "Pending" in top_text or "pending" in top_text.lower()
-
-        # Also check for "Message" button — only appears after connection accepted
         msg_btn = top_card.locator('a:has-text("Message"), button:has-text("Message")')
         has_message_btn = await msg_btn.count() > 0
 
-        return is_first and not is_pending and has_message_btn
+        result = {"accepted": is_first and not is_pending and has_message_btn}
+        return result
     except Exception:
-        return False
+        result = {"accepted": False}
+        return result
     finally:
+        if not result.get("session_expired"):
+            try:
+                fresh = await context.cookies()
+                if fresh:
+                    result["updated_cookies"] = [
+                        {"name": c["name"], "value": c["value"], "domain": c["domain"], "path": c["path"]}
+                        for c in fresh if "linkedin.com" in c.get("domain", "")
+                    ]
+            except Exception:
+                pass
         await context.close()
         await browser.close()
         await pw.stop()
@@ -597,14 +680,28 @@ def _render_template(template: str, lead) -> str:
 # --- Worker Logic ---
 
 def process_logins(db: Session, headless: bool):
-    """Login to all accounts that need it."""
+    """Login to accounts where the user explicitly clicked Login (login_triggered=True only).
+    Session expiry is handled separately — user must paste fresh cookies or click Login manually.
+    """
+    cooldown = datetime.datetime.utcnow() - datetime.timedelta(minutes=30)
     accounts = db.execute(
-        select(Account).where(Account.status == AccountStatus.login_required)
+        select(Account).where(
+            Account.status == AccountStatus.login_required,
+            (Account.updated_at == None) | (Account.updated_at <= cooldown),
+        )
     ).scalars().all()
+
+    if not accounts:
+        return
 
     for account in accounts:
         if shutdown_requested:
             break
+
+        # Stamp updated_at NOW so other worker cycles won't pick this account up
+        # while this long-running login attempt is in progress (prevents duplicate OTPs)
+        account.updated_at = datetime.datetime.utcnow()
+        db.commit()
 
         password = settings.decrypt(account.encrypted_password)
         try:
@@ -620,8 +717,13 @@ def process_logins(db: Session, headless: bool):
             account.status = AccountStatus.active
             account.login_error = None
             account.verification_code = None
+            account.login_triggered = False
             print(f"[Login] Account {account.email} is now active.")
         else:
+            account.updated_at = datetime.datetime.utcnow()
+            account.login_triggered = False  # Require user to click Login again to retry
+            if not account.login_error:
+                account.login_error = "Login failed. Click Login to try again."
             print(f"[Login] Account {account.email} login failed.")
 
         db.commit()
@@ -715,10 +817,21 @@ def process_campaigns(db: Session, headless: bool):
                 headless=headless,
             ))
 
+            # Refresh stored cookies so LinkedIn session stays alive
+            if result.get("updated_cookies"):
+                cookies = result["updated_cookies"]
+                account.session_cookies = json.dumps(cookies)
+
             status = result.get("status")
             lead.last_action_at = datetime.datetime.utcnow()
 
-            if status == "sent":
+            if status == "session_expired":
+                print(f"  [Lead] --> Session expired. Marking account for re-login.")
+                account.status = AccountStatus.login_required
+                account.login_error = "Session expired. Please log in again."
+                db.commit()
+                break  # Stop processing this campaign — session is dead
+            elif status == "sent":
                 lead.status = LeadStatus.invited
                 print(f"  [Lead] --> Invited!")
             elif status == "already_connected":
@@ -775,7 +888,7 @@ def process_connection_checks(db: Session, headless: bool):
         account = db.execute(
             select(Account).where(Account.id == campaign.account_id)
         ).scalar_one_or_none()
-        if not account or not account.session_cookies:
+        if not account or account.status != AccountStatus.active or not account.session_cookies:
             continue
 
         cookies = json.loads(account.session_cookies)
@@ -798,18 +911,28 @@ def process_connection_checks(db: Session, headless: bool):
             if shutdown_requested:
                 break
 
-            accepted = asyncio.run(check_connection_accepted(
+            check_result = asyncio.run(check_connection_accepted(
                 cookies=cookies,
                 profile_url=lead.linkedin_url,
                 headless=headless,
             ))
 
-            if accepted:
+            # Refresh stored cookies
+            if check_result.get("updated_cookies"):
+                cookies = check_result["updated_cookies"]
+                account.session_cookies = json.dumps(cookies)
+
+            if check_result.get("session_expired"):
+                account.status = AccountStatus.login_required
+                account.login_error = "Session expired. Please log in again."
+                db.commit()
+                break
+
+            if check_result.get("accepted"):
                 lead.status = LeadStatus.connected
                 lead.connected_at = datetime.datetime.utcnow()
                 print(f"  [Check] {lead.name or 'Unknown'} --> Connected!")
             else:
-                # Update last_action_at so we don't check too frequently
                 lead.last_action_at = datetime.datetime.utcnow()
 
             db.commit()
@@ -842,7 +965,7 @@ def process_followups(db: Session, headless: bool):
         account = db.execute(
             select(Account).where(Account.id == campaign.account_id)
         ).scalar_one_or_none()
-        if not account or not account.session_cookies:
+        if not account or account.status != AccountStatus.active or not account.session_cookies:
             continue
 
         cookies = json.loads(account.session_cookies)
@@ -857,7 +980,7 @@ def process_followups(db: Session, headless: bool):
 
         # Backfill connected_at for leads that were connected before the column existed
         for lead in connected_leads:
-            if lead.connected_at is None:
+            if lead.connected_at is None or not isinstance(lead.connected_at, datetime.datetime):
                 lead.connected_at = lead.last_action_at or datetime.datetime.utcnow()
                 db.commit()
 
@@ -874,11 +997,12 @@ def process_followups(db: Session, headless: bool):
                 if shutdown_requested:
                     break
 
-                # Check if this step was already sent
+                # Check if this step was already successfully sent (skip failures so they retry)
                 already_sent = db.execute(
                     select(FollowUpLog).where(
                         FollowUpLog.lead_id == lead.id,
                         FollowUpLog.step_id == step.id,
+                        FollowUpLog.status == "sent",
                     )
                 ).scalar_one_or_none()
 
@@ -902,19 +1026,33 @@ def process_followups(db: Session, headless: bool):
                     headless=headless,
                 ))
 
+                # Refresh stored cookies
+                if result.get("updated_cookies"):
+                    cookies = result["updated_cookies"]
+                    account.session_cookies = json.dumps(cookies)
+
+                followup_status = result.get("status", "failed")
+
+                if followup_status == "session_expired":
+                    print(f"  [Follow-up] --> Session expired. Marking account for re-login.")
+                    account.status = AccountStatus.login_required
+                    account.login_error = "Session expired. Please log in again."
+                    db.commit()
+                    break  # Stop processing follow-ups for this campaign
+
                 log = FollowUpLog(
                     lead_id=lead.id,
                     step_id=step.id,
-                    status=result.get("status", "failed"),
+                    status=followup_status,
                     error_message=result.get("error"),
                 )
                 db.add(log)
                 db.commit()
 
-                if result.get("status") == "sent":
+                if followup_status == "sent":
                     print(f"  [Follow-up] --> Message sent!")
                 else:
-                    print(f"  [Follow-up] --> Failed: {result.get('status')}")
+                    print(f"  [Follow-up] --> Failed: {followup_status}")
 
                 # Delay between messages
                 delay = random.uniform(settings.min_delay, settings.max_delay)
@@ -938,7 +1076,7 @@ def run_once(headless: bool = True):
         print(f"[Worker] Starting cycle at {datetime.datetime.utcnow().isoformat()}")
         print("=" * 60)
 
-        process_logins(db, headless)
+        process_logins(db, headless)  # Only runs when user explicitly clicks Login (login_triggered=True)
         process_campaigns(db, headless)
         process_connection_checks(db, headless)
         process_followups(db, headless)

@@ -67,6 +67,7 @@ class Account(Base):
     status = Column(SQLEnum(AccountStatus), default=AccountStatus.login_required)
     verification_code = Column(String(20), nullable=True)
     login_error = Column(Text, nullable=True)
+    login_triggered = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

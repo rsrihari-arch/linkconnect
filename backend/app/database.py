@@ -21,18 +21,12 @@ if "sslmode=" in db_url:
 engine = create_engine(db_url, echo=False, pool_pre_ping=True, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, class_=Session, expire_on_commit=False)
 
-_tables_created = False
-
 
 class Base(DeclarativeBase):
     pass
 
 
 def get_db():
-    global _tables_created
-    if not _tables_created:
-        init_db()
-        _tables_created = True
     db = SessionLocal()
     try:
         yield db
@@ -60,6 +54,7 @@ def _run_migrations():
         for col, coltype in [
             ("verification_code", "VARCHAR(20)"),
             ("login_error", "TEXT"),
+            ("login_triggered", "BOOLEAN DEFAULT FALSE"),
         ]:
             try:
                 conn.execute(text(f"ALTER TABLE accounts ADD COLUMN IF NOT EXISTS {col} {coltype}"))

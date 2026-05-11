@@ -4,6 +4,7 @@ import { useEffect, useState, use, useCallback } from "react";
 import {
   getCampaign, getLeads, uploadLeads, startCampaign, stopCampaign, deleteLead,
   getFollowUpSteps, createFollowUpStep, updateFollowUpStep, deleteFollowUpStep, getFollowUpStats,
+  resetFailedLeads,
 } from "@/lib/api";
 import Link from "next/link";
 
@@ -122,13 +123,21 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   };
 
   const handleStart = async () => {
-    try { await startCampaign(campaignId); showToast("Campaign started"); fetchData(); }
+    try { await startCampaign(campaignId); showToast("Campaign started — worker will pick it up within 1 minute"); fetchData(); }
     catch (err: any) { showToast(err.message, "error"); }
   };
 
   const handleStop = async () => {
     try { await stopCampaign(campaignId); showToast("Campaign stopped"); fetchData(); }
     catch (err: any) { showToast(err.message, "error"); }
+  };
+
+  const handleResetFailedLeads = async () => {
+    try {
+      const res = await resetFailedLeads(campaignId);
+      showToast(`${res.count} lead(s) reset to pending. Click Start to send invitations.`);
+      fetchData();
+    } catch (err: any) { showToast(err.message, "error"); }
   };
 
   const handleDeleteLead = async (leadId: number) => {
@@ -254,9 +263,14 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       <div className="flex flex-wrap gap-3 mb-6">
         {campaign.status === "active" ? (
           <button onClick={handleStop} className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition">Stop Campaign</button>
-        ) : campaign.status !== "completed" ? (
+        ) : (
           <button onClick={handleStart} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">Start Campaign</button>
-        ) : null}
+        )}
+        {(stats.failed + stats.skipped) > 0 && campaign.status !== "active" && (
+          <button onClick={handleResetFailedLeads} className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+            Retry Failed ({stats.failed + stats.skipped})
+          </button>
+        )}
         <button onClick={() => { setShowAddLead(!showAddLead); setActiveTab("leads"); }} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">+ Add Lead</button>
         <label className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium cursor-pointer transition">
           {uploading ? "Uploading..." : "Upload CSV"}

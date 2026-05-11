@@ -14,7 +14,7 @@ cd "$SCRIPT_DIR"
 
 while true; do
     echo "[$(date)] Starting worker..." >> "$LOG_FILE"
-    PYTHONUNBUFFERED=1 python3 -u worker.py >> "$LOG_FILE" 2>&1
+    PYTHONUNBUFFERED=1 python3 -u worker.py --interval 1 >> "$LOG_FILE" 2>&1
     EXIT_CODE=$?
     echo "[$(date)] Worker exited with code $EXIT_CODE. Restarting in 10 seconds..." >> "$LOG_FILE"
     sleep 10

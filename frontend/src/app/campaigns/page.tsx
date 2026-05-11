@@ -42,6 +42,12 @@ export default function CampaignsPage() {
   };
 
   const handleStart = async (id: number) => {
+    const campaign = campaigns.find((c: any) => c.id === id);
+    const stats = campaign?.stats || { pending: 0, failed: 0, skipped: 0 };
+    if (stats.pending === 0 && (stats.failed + stats.skipped) > 0) {
+      alert(`This campaign has no pending leads — ${stats.failed + stats.skipped} failed/skipped leads need to be retried first.\n\nOpen the campaign and click "Retry Failed" to reset them, then start.`);
+      return;
+    }
     try {
       await startCampaign(id);
       fetchData();
