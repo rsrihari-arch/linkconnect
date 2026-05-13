@@ -28,6 +28,10 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [activeTab, setActiveTab] = useState<Tab>("leads");
 
+  // Connection message edit state
+  const [editingConnMsg, setEditingConnMsg] = useState(false);
+  const [connMsgDraft, setConnMsgDraft] = useState("");
+
   // Follow-up state
   const [followUpSteps, setFollowUpSteps] = useState<any[]>([]);
   const [followUpStats, setFollowUpStats] = useState<any[]>([]);
@@ -143,6 +147,25 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   const handleDeleteLead = async (leadId: number) => {
     try { await deleteLead(campaignId, leadId); showToast("Lead removed"); fetchData(); }
     catch (err: any) { showToast(err.message, "error"); }
+  };
+
+  const handleSaveConnMsg = async () => {
+    try {
+      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const res = await fetch(`${API_BASE}/api/campaigns/${campaignId}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ message_template: connMsgDraft }),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+      setEditingConnMsg(false);
+      showToast("Connection message saved");
+      fetchData();
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
   };
 
   // Follow-up handlers
@@ -390,8 +413,33 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         <div className="space-y-6">
           {/* Connection Request Info */}
           <div className="bg-white rounded-xl border border-slate-200 p-5">
-            <h3 className="text-base font-semibold text-slate-700 mb-3">Connection Request</h3>
-            {campaign.message_template ? (
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-base font-semibold text-slate-700">Connection Request</h3>
+              {!editingConnMsg && (
+                <button
+                  onClick={() => { setEditingConnMsg(true); setConnMsgDraft(campaign.message_template || ""); }}
+                  className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+                >
+                  {campaign.message_template ? "Edit" : "+ Add Message"}
+                </button>
+              )}
+            </div>
+            {editingConnMsg ? (
+              <div className="space-y-3">
+                <textarea
+                  value={connMsgDraft}
+                  onChange={(e) => setConnMsgDraft(e.target.value)}
+                  rows={4}
+                  placeholder="Hi {first_name}, I'd love to connect..."
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                />
+                <p className="text-xs text-slate-400">Variables: {"{first_name}"}, {"{last_name}"}, {"{name}"}</p>
+                <div className="flex gap-2">
+                  <button onClick={handleSaveConnMsg} className="bg-green-600 hover:bg-green-700 text-white px-4 py-1.5 rounded-lg text-sm font-medium transition">Save</button>
+                  <button onClick={() => setEditingConnMsg(false)} className="text-slate-500 text-sm hover:text-slate-700">Cancel</button>
+                </div>
+              </div>
+            ) : campaign.message_template ? (
               <div className="bg-slate-50 rounded-lg p-4 text-sm text-slate-700 whitespace-pre-wrap">{campaign.message_template}</div>
             ) : (
               <p className="text-sm text-slate-400">No connection message set. Requests will be sent without a note.</p>
