@@ -80,7 +80,7 @@ class Campaign(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
     name = Column(String(255), nullable=False)
     daily_limit = Column(Integer, default=20)
     message_template = Column(Text, nullable=True)

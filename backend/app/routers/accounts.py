@@ -196,11 +196,16 @@ def submit_verification_code(account_id: int, data: AccountVerifyCode, db: Sessi
 
 @router.delete("/{account_id}")
 def delete_account(account_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.models import Campaign
     account = db.execute(
         select(Account).where(Account.id == account_id, Account.user_id == user.id)
     ).scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    # Detach campaigns instead of cascade-deleting them
+    db.execute(
+        sa_update(Campaign).where(Campaign.account_id == account.id).values(account_id=None)
+    )
     db.delete(account)
     db.commit()
     return {"message": "Account deleted"}
